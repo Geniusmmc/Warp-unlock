@@ -305,3 +305,11 @@ while true; do
         *) echo "无效选项"; read -p "按回车返回菜单..." ;;
     esac
 done
+
+# 如果 warp-stream-monitor.service 存在，则重启它
+if systemctl list-units --type=service | grep -q "$STREAM_SERVICE_NAME"; then
+    echo "检测到 $STREAM_SERVICE_NAME 服务，正在重新加载并重启..."
+    sudo systemctl daemon-reload
+    sudo systemctl restart $STREAM_SERVICE_NAME
+fi
+
