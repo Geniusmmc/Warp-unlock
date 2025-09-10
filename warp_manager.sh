@@ -191,13 +191,31 @@ enable_stream_monitor() {
 MAX_FAILS=5
 PAUSE_TIME=300
 fail_count=0
+
 while true; do
     ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
-    nf=$(curl -6 -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
-    ds=$(curl -6 -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
-    if [ "$nf" != "200" ] || [ "$ds" != "200" ]; then
+
+    # 获取状态码
+    nf_code=$(curl -6 -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
+    ds_code=$(curl -6 -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
+
+    # 转换成符号
+    if [ "$nf_code" = "200" ]; then
+        nf_status="√"
+    else
+        nf_status="×"
+    fi
+
+    if [ "$ds_code" = "200" ]; then
+        ds_status="√"
+    else
+        ds_status="×"
+    fi
+
+    # 检测逻辑
+    if [ "$nf_code" != "200" ] || [ "$ds_code" != "200" ]; then
         ((fail_count++))
-        echo "$(date) [IPv6: $ipv6] ❌ 未解锁（Netflix: $nf, Disney+: $ds），连续失败 ${fail_count} 次 → 更换 WARP IP..."
+        echo "$(date) [IPv6: $ipv6] ❌ 未解锁（Netflix: $nf_status, Disney+: $ds_status），连续失败 ${fail_count} 次 → 更换 WARP IP..."
         wg-quick down warp >/dev/null 2>&1
         wg-quick up warp   >/dev/null 2>&1
         echo "$(date) 已更换 WARP IP，等待 10 秒后继续检测..."
@@ -208,7 +226,7 @@ while true; do
             fail_count=0
         fi
     else
-        echo "$(date) [IPv6: $ipv6] ✅ 已解锁（Netflix: $nf, Disney+: $ds），30 分钟后检测"
+        echo "$(date) [IPv6: $ipv6] ✅ 已解锁（Netflix: $nf_status, Disney+: $ds_status），30 分钟后检测"
         fail_count=0
         sleep 1800
     fi
