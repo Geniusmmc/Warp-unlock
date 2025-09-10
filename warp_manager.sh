@@ -269,7 +269,7 @@ check_disney() {
 
 while true; do
     ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
-    nf_status=$(check_netflix)
+    nf_status=$(check_netflix_sg)
     nf_ok=$?
     ds_status=$(check_disney)
     ds_ok=$?
