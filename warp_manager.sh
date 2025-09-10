@@ -205,19 +205,19 @@ MAX_FAILS=5
 PAUSE_TIME=300
 fail_count=0
 
-check_netflix() {
-    # 测试非自制剧（例如《The Witcher》）
-    local test_id="81280792"
-    local result=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${test_id}")
-    if [ "$result" = "200" ]; then
-        echo "√"  # 完整解锁
+check_netflix_sg() {
+    # 新加坡独占非自制剧 ID（需确认有效）
+    local sg_id="81215567"
+    local result_sg=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${sg_id}")
+    if [ "$result_sg" = "200" ]; then
+        echo "√(SG)"
         return 0
     fi
 
-    # 测试自制剧（例如《Stranger Things》）
+    # 测试自制剧
     local original_id="80018499"
-    result=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${original_id}")
-    if [ "$result" = "200" ]; then
+    local result_orig=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${original_id}")
+    if [ "$result_orig" = "200" ]; then
         echo "×(仅自制剧)"
         return 1
     fi
@@ -225,6 +225,7 @@ check_netflix() {
     echo "×"
     return 1
 }
+
 
 check_disney() {
     local token=$(curl -6 -s --max-time 10 "https://global.edge.bamgrid.com/token" \
