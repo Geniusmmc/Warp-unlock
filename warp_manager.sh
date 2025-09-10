@@ -6,6 +6,9 @@
 
 SERVICE_NAME="warp-monitor.service"
 STREAM_SERVICE_NAME="warp-stream-monitor.service"
+# 统一设置 Netflix 新加坡独占影片 ID
+# 注意：此ID可能会随时间失效，建议定期检查
+NETFLIX_SG_ID="81215567"
 
 if systemctl list-units --type=service | grep -q "$STREAM_SERVICE_NAME"; then
     echo "检测到 $STREAM_SERVICE_NAME 服务，正在重新加载并重启..."
@@ -45,7 +48,7 @@ check_warp_status() {
 show_menu() {
     clear
     check_warp_status
-    echo "   Cloudflare WARP 管理菜单"
+    echo "    Cloudflare WARP 管理菜单"
     echo "=============================="
     echo "1) 安装/配置 WARP IPv6"
     echo "2) 卸载 WARP 接口"
@@ -67,7 +70,7 @@ install_warp() {
     echo "=== 检测 CPU 架构 ==="
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64)   WGCF_ARCH="amd64" ;;
+        x86_64)    WGCF_ARCH="amd64" ;;
         aarch64|arm64) WGCF_ARCH="arm64" ;;
         armv7l|armv6l) WGCF_ARCH="armv7" ;;
         i386|i686) WGCF_ARCH="386" ;;
@@ -188,47 +191,25 @@ disable_auto_restart() {
 
 # 开启流媒体解锁检测（仅 IPv6）
 enable_stream_monitor() {
-    echo "=== 开启流媒体解锁检测（仅 IPv6，未解锁立即换 IP，解锁后 30 分钟检测一次） ==="
+    echo "=== 正在配置并启动流媒体解锁检测（仅 IPv6，未解锁立即换 IP，解锁后 30 分钟检测一次） ==="
+    echo "=== 正在写入后台检测脚本..."
 
-    # 先立即检测一次（只检测 IPv6）
-    ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
-    nf_code=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${sg_id}")
-    ds_code=$(curl -6 -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
-
-    # 转换成符号
-    if [ "$nf_code" = "200" ]; then
-        nf_status="√"
-    else
-        nf_status="×"
-    fi
-    if [ "$ds_code" = "200" ]; then
-        ds_status="√"
-    else
-        ds_status="×"
-    fi
-
-    echo "当前出口 IPv6: $ipv6"
-    echo "Netflix 检测结果: $nf_status"
-    echo "Disney+ 检测结果: $ds_status"
-    echo "======================================"
-
-    # 下面写入后台检测脚本（保持符号输出）
     sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
 MAX_FAILS=5
 PAUSE_TIME=300
 fail_count=0
+NETFLIX_SG_ID="81215567"
 
-check_netflix_sg() {
-    # 新加坡独占非自制剧 ID（需确认有效）
-    local sg_id="81215567"
-    local result_sg=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${sg_id}")
+check_netflix() {
+    # 优先检测新加坡独占非自制剧
+    local result_sg=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${NETFLIX_SG_ID}")
     if [ "$result_sg" = "200" ]; then
         echo "√(SG)"
         return 0
     fi
-
-    # 测试自制剧
+    
+    # 备用：测试自制剧以判断是否为仅自制剧解锁
     local original_id="80018499"
     local result_orig=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${original_id}")
     if [ "$result_orig" = "200" ]; then
@@ -239,7 +220,6 @@ check_netflix_sg() {
     echo "×"
     return 1
 }
-
 
 check_disney() {
     local token=$(curl -6 -s --max-time 10 "https://global.edge.bamgrid.com/token" \
@@ -269,7 +249,7 @@ check_disney() {
 
 while true; do
     ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
-    nf_status=$(check_netflix_sg)
+    nf_status=$(check_netflix)
     nf_ok=$?
     ds_status=$(check_disney)
     ds_ok=$?
@@ -278,7 +258,7 @@ while true; do
         ((fail_count++))
         echo "$(date) [IPv6: $ipv6] ❌ 未解锁（Netflix: $nf_status, Disney+: $ds_status），连续失败 ${fail_count} 次 → 更换 WARP IP..."
         wg-quick down warp >/dev/null 2>&1
-        wg-quick up warp   >/dev/null 2>&1
+        wg-quick up warp    >/dev/null 2>&1
         echo "$(date) 已更换 WARP IP，等待 10 秒后继续检测..."
         sleep 10
         if [ "$fail_count" -ge "$MAX_FAILS" ]; then
@@ -318,8 +298,16 @@ EOF
     sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
 }
 
-
-
+# 停止流媒体检测
+disable_stream_monitor() {
+    echo "=== 停止流媒体解锁检测 ==="
+    sudo systemctl disable --now $STREAM_SERVICE_NAME 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/$STREAM_SERVICE_NAME
+    sudo rm -f /usr/local/bin/warp-stream-monitor.sh
+    sudo systemctl daemon-reload
+    echo "流媒体解锁检测已停止"
+    read -p "按回车返回菜单..."
+}
 
 # 主循环
 while true; do
@@ -333,16 +321,8 @@ while true; do
         5) enable_auto_restart ;;
         6) disable_auto_restart ;;
         7) enable_stream_monitor ;;
-        8) sudo systemctl disable --now $STREAM_SERVICE_NAME 2>/dev/null || true
-           sudo rm -f /etc/systemd/system/$STREAM_SERVICE_NAME
-           sudo rm -f /usr/local/bin/warp-stream-monitor.sh
-           sudo systemctl daemon-reload
-           echo "流媒体解锁检测已停止"
-           read -p "按回车返回菜单..." ;;
+        8) disable_stream_monitor ;;
         0) exit 0 ;;
         *) echo "无效选项"; read -p "按回车返回菜单..." ;;
     esac
 done
-
-
-
