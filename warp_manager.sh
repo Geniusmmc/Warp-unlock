@@ -172,34 +172,6 @@ disable_auto_restart() {
     read -p "按回车返回菜单..."
 }
 
-# 开启流媒体解锁检测（仅 IPv6）
-enable_stream_monitor() {
-    echo "=== 开启流媒体解锁检测（仅 IPv6，未解锁立即换 IP，解锁后 30 分钟检测一次） ==="
-
-    # 先立即检测一次（只检测 IPv6）
-    ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
-    nf_code=$(curl -6 -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
-    ds_code=$(curl -6 -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
-
-    # 转换成符号
-    if [ "$nf_code" = "200" ]; then
-        nf_status="√"
-    else
-        nf_status="×"
-    fi
-    if [ "$ds_code" = "200" ]; then
-        ds_status="√"
-    else
-        ds_status="×"
-    fi
-
-    echo "当前出口 IPv6: $ipv6"
-    echo "Netflix 检测结果: $nf_status"
-    echo "Disney+ 检测结果: $ds_status"
-    echo "======================================"
-
-    # 下面写入后台检测脚本（保持符号输出）
-    sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
 MAX_FAILS=5
 PAUSE_TIME=300
@@ -277,10 +249,6 @@ while true; do
         sleep 1800
     fi
 done
-
-
-
-
 
 
 # 主循环
