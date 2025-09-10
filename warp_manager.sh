@@ -1,55 +1,56 @@
 #!/bin/bash
 # Cloudflare WARP 管理工具
 # 功能：安装/配置 WARP IPv6（支持 WARP+）、卸载接口、卸载脚本、检测状态、自动检测异常重启、流媒体解锁检测
-# 接口名 warp，保留本地 IPv4，自动检测架构，支持开机自启，安装后自动注册 warp 命令
-# 如果 warp-stream-monitor.service 存在，则重启它
+# 接口名 warp，保留本地 IPv4，自动检测架构，支持开机自启，安装后自动注册 02 命令
 
-SERVICE_NAME="warp-monitor.service"
-STREAM_SERVICE_NAME="warp-stream-monitor.service"
-# 统一设置 Netflix 新加坡独占影片 ID
-# 注意：此ID可能会随时间失效，建议定期检查
-NETFLIX_SG_ID="81215567"
+# --- 辅助函数 ---
 
-if systemctl list-units --type=service | grep -q "$STREAM_SERVICE_NAME"; then
-    echo "检测到 $STREAM_SERVICE_NAME 服务，正在重新加载并重启..."
-    sudo systemctl daemon-reload
-    sudo systemctl restart $STREAM_SERVICE_NAME
-fi
+# 输出带颜色的文本
+color_echo() {
+    local color_map
+    declare -A color_map=(
+        ["red"]="31"
+        ["green"]="32"
+        ["yellow"]="33"
+        ["blue"]="34"
+        ["purple"]="35"
+        ["cyan"]="36"
+    )
+    if [[ -n "${color_map[$1]}" ]]; then
+        echo -e "\033[${color_map[$1]}m$2\033[0m"
+    else
+        echo "$2"
+    fi
+}
 
-# 创建快捷命令 02（在线获取最新版脚本）
-if [ ! -f /usr/local/bin/02 ]; then
-    echo "正在创建快捷命令 '02'..."
-    sudo bash -c 'echo "bash <(curl -fsSL https://raw.githubusercontent.com/Geniusmmc/Warp-unlock/main/warp_manager.sh)" > /usr/local/bin/02'
-    sudo chmod +x /usr/local/bin/02
-    echo "已创建快捷命令，之后可直接输入 02 打开 WARP 管理菜单"
-fi
-
-# 检测 WARP 状态
+# 检查 WARP 接口状态和公网 IP
 check_warp_status() {
     local status ipv4 ipv6
 
     if ip link show warp >/dev/null 2>&1; then
-        status="运行中 ✅"
+        status="$(color_echo green "运行中 ✅")"
     else
-        status="未运行 ❌"
+        status="$(color_echo red "未运行 ❌")"
     fi
 
-    # 不管 warp 是否运行，都检测本机出口
     ipv4=$(curl -4 -s --max-time 5 https://ip.gs || echo "不可用")
     ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
 
-    echo "=== WARP 状态: $status ==="
+    echo "--- WARP 状态 ---"
+    echo "状态: $status"
     echo "出口 IPv4: $ipv4"
     echo "出口 IPv6: $ipv6"
-    echo "=============================="
+    echo "-------------------"
 }
 
-# 菜单
+# --- 菜单功能函数 ---
+
+# 显示菜单
 show_menu() {
     clear
     check_warp_status
     echo "    Cloudflare WARP 管理菜单"
-    echo "=============================="
+    echo "==============================="
     echo "1) 安装/配置 WARP IPv6"
     echo "2) 卸载 WARP 接口"
     echo "3) 卸载脚本和快捷命令"
@@ -59,35 +60,39 @@ show_menu() {
     echo "7) 开启流媒体解锁检测（Netflix & Disney+）"
     echo "8) 停止流媒体解锁检测"
     echo "0) 退出"
-    echo "=============================="
+    echo "==============================="
 }
 
 # 安装/配置 WARP
 install_warp() {
-    echo "=== 更新系统并安装依赖 ==="
+    color_echo green "=== 更新系统并安装依赖 ==="
     sudo apt update && sudo apt install -y curl wget net-tools wireguard-tools
 
-    echo "=== 检测 CPU 架构 ==="
+    color_echo green "=== 检测 CPU 架构 ==="
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64)    WGCF_ARCH="amd64" ;;
+        x86_64)      WGCF_ARCH="amd64" ;;
         aarch64|arm64) WGCF_ARCH="arm64" ;;
         armv7l|armv6l) WGCF_ARCH="armv7" ;;
-        i386|i686) WGCF_ARCH="386" ;;
-        *) echo "不支持的架构: $ARCH"; read -p "按回车返回菜单..."; return ;;
+        i386|i686)   WGCF_ARCH="386" ;;
+        *) color_echo red "不支持的架构: $ARCH"; read -p "按回车返回菜单..."; return ;;
     esac
     echo "检测到架构: $ARCH -> 下载 wgcf_${WGCF_ARCH}"
 
-    echo "=== 获取 wgcf 最新版本并下载 ==="
+    color_echo green "=== 获取 wgcf 最新版本并下载 ==="
     WGCF_VER=$(curl -s https://api.github.com/repos/ViRb3/wgcf/releases/latest | grep tag_name | cut -d '"' -f4)
     FILE="wgcf_${WGCF_VER#v}_linux_${WGCF_ARCH}"
     URL="https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/${FILE}"
-    echo "下载 $URL"
-    wget -O wgcf "$URL" || { echo "下载失败，请手动下载 $URL 并放置到 /usr/local/bin/wgcf"; read -p "按回车返回菜单..."; return; }
+    echo "正在下载 $URL"
+    if ! wget -O wgcf "$URL"; then
+        color_echo red "下载失败，请检查网络或稍后重试。"
+        read -p "按回车返回菜单..."
+        return
+    fi
     chmod +x wgcf
     sudo mv wgcf /usr/local/bin/
 
-    echo "=== 注册 WARP 账户 ==="
+    color_echo green "=== 注册 WARP 账户 ==="
     if [ ! -f wgcf-account.toml ]; then
         wgcf register --accept-tos
     fi
@@ -96,21 +101,21 @@ install_warp() {
     if [[ "$use_warp_plus" =~ ^[Yy]$ ]]; then
         read -p "请输入你的 WARP+ License Key: " warp_plus_key
         sed -i "s/license_key = .*/license_key = \"$warp_plus_key\"/" wgcf-account.toml
-        echo "已写入 WARP+ 授权密钥"
+        color_echo green "已写入 WARP+ 授权密钥"
     fi
 
-    echo "=== 生成 WireGuard 配置文件 ==="
+    color_echo green "=== 生成 WireGuard 配置文件 ==="
     wgcf generate
 
-    echo "=== 修改配置文件：IPv6 全局走 WARP，IPv4 保留本地出口 ==="
+    color_echo green "=== 修改配置文件：IPv6 全局走 WARP，IPv4 保留本地出口 ==="
     WARP_IPV4=$(grep '^Address' wgcf-profile.conf | grep -oP '\d+\.\d+\.\d+\.\d+/\d+')
     sed -i "s#0\.0\.0\.0/0#${WARP_IPV4}#g" wgcf-profile.conf
     sudo mv wgcf-profile.conf /etc/wireguard/warp.conf
 
-    echo "=== 启用 WireGuard 接口 warp ==="
+    color_echo green "=== 启用 WireGuard 接口 warp ==="
     sudo wg-quick up warp
 
-    echo "=== 设置 warp 接口开机自启 ==="
+    color_echo green "=== 设置 warp 接口开机自启 ==="
     sudo systemctl enable wg-quick@warp
 
     check_warp_status
@@ -119,33 +124,34 @@ install_warp() {
 
 # 卸载 WARP 接口
 uninstall_warp_interface() {
-    echo "=== 停止并删除 WARP 接口 ==="
+    color_echo yellow "=== 停止并删除 WARP 接口 ==="
     sudo wg-quick down warp 2>/dev/null || true
     sudo systemctl disable wg-quick@warp 2>/dev/null || true
     sudo rm -f /etc/wireguard/warp.conf
     sudo rm -f wgcf-account.toml wgcf-profile.conf
-    echo "WARP 接口已卸载"
+    color_echo green "WARP 接口已卸载"
     read -p "按回车返回菜单..."
 }
 
 # 卸载脚本
 uninstall_script() {
-    echo "=== 卸载脚本和快捷命令 ==="
-    sudo rm -f "$SCRIPT_PATH"
-    echo "已删除 warp 快捷命令"
-    exit 0
+    color_echo red "=== 卸载脚本和快捷命令 ==="
+    sudo rm -f /usr/local/bin/02
+    color_echo green "已删除 02 快捷命令"
+    echo "请手动删除此脚本文件。"
+    read -p "按回车返回菜单..."
 }
 
 # 开启自动检测并重启（接口异常）
 enable_auto_restart() {
     read -p "请输入检测间隔（秒，建议 60~300）: " interval
     if ! [[ "$interval" =~ ^[0-9]+$ ]] || [ "$interval" -lt 10 ]; then
-        echo "检测间隔必须是 >=10 的数字"
+        color_echo red "检测间隔必须是 >=10 的数字"
         read -p "按回车返回菜单..."
         return
     fi
 
-    echo "=== 开启 WARP 接口异常检测并自动重启（间隔 ${interval} 秒） ==="
+    color_echo green "=== 开启 WARP 接口异常检测并自动重启（间隔 ${interval} 秒） ==="
     sudo bash -c "cat > /usr/local/bin/warp-monitor.sh" <<EOF
 #!/bin/bash
 while true; do
@@ -174,18 +180,18 @@ EOF
 
     sudo systemctl daemon-reload
     sudo systemctl enable --now $SERVICE_NAME
-    echo "自动检测功能已开启，每 ${interval} 秒检测一次 WARP 状态"
+    color_echo green "自动检测功能已开启，每 ${interval} 秒检测一次 WARP 状态"
     read -p "按回车返回菜单..."
 }
 
 # 停止自动检测
 disable_auto_restart() {
-    echo "=== 停止 WARP 接口异常检测 ==="
+    color_echo yellow "=== 停止 WARP 接口异常检测 ==="
     sudo systemctl disable --now $SERVICE_NAME 2>/dev/null || true
     sudo rm -f /etc/systemd/system/$SERVICE_NAME
     sudo rm -f /usr/local/bin/warp-monitor.sh
     sudo systemctl daemon-reload
-    echo "自动检测功能已停止"
+    color_echo green "自动检测功能已停止"
     read -p "按回车返回菜单..."
 }
 
@@ -193,29 +199,22 @@ disable_auto_restart() {
 enable_stream_monitor() {
     color_echo green "=== 开启流媒体解锁检测（仅 IPv6） ==="
 
-    # 将检测脚本写入文件
     sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
 # WARP 流媒体解锁检测脚本
-# 检测 IPv6 是否解锁 Netflix 和 Disney+，如果未解锁则更换 IP
 IFACE="warp"
-RETRY_COOLDOWN=10          # 每次更换 IP 后的等待时间
-MAX_CONSEC_FAILS=10        # 连续失败次数上限
-PAUSE_ON_MANY_FAILS=1800   # 达到失败上限后的暂停时间（30分钟）
-SLEEP_WHEN_UNLOCKED=1800   # 解锁成功后的下一次检测间隔（30分钟）
+RETRY_COOLDOWN=10
+MAX_CONSEC_FAILS=10
+PAUSE_ON_MANY_FAILS=1800
+SLEEP_WHEN_UNLOCKED=1800
 LOG_PREFIX="[WARP-STREAM]"
 
-# 统一的日志输出函数
 log() { echo "$(date '+%F %T') ${LOG_PREFIX} $*"; }
-
-# 获取 IPv6 地址
 get_ipv6() { curl -6 -s --max-time 5 https://ip.gs || echo "不可用"; }
 
-# 检测 Netflix 解锁状态
 check_netflix() {
-    # 使用新加坡独占影片ID进行检测
     local sg_id="81215567"
-    local original_id="80018499" # Netflix自制剧ID
+    local original_id="80018499"
     local code_sg
     code_sg=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${sg_id}")
     if [ "$code_sg" = "200" ]; then
@@ -232,7 +231,6 @@ check_netflix() {
     return 1
 }
 
-# 检测 Disney+ 解锁状态
 check_disney() {
     local token=$(curl -6 -s --max-time 10 "https://global.edge.bamgrid.com/token" \
         -H "authorization: Bearer ZGlzbmV5JmF1dGg9dG9rZW4=" \
@@ -283,10 +281,8 @@ while true; do
     fi
 done
 EOF
-    # 设置脚本可执行权限
     sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
 
-    # 创建并启用 systemd 服务
     sudo bash -c "cat > /etc/systemd/system/$STREAM_SERVICE_NAME" <<EOF
 [Unit]
 Description=WARP 流媒体解锁检测（仅 IPv6）
@@ -308,21 +304,5 @@ EOF
     sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
 }
 
-
-# 主循环
-while true; do
-    show_menu
-    read -p "请选择操作 [0-8]: " choice
-    case $choice in
-        1) install_warp ;;
-        2) uninstall_warp_interface ;;
-        3) uninstall_script ;;
-        4) check_warp_status; read -p "按回车返回菜单..." ;;
-        5) enable_auto_restart ;;
-        6) disable_auto_restart ;;
-        7) enable_stream_monitor ;;
-        8) disable_stream_monitor ;;
-        0) exit 0 ;;
-        *) echo "无效选项"; read -p "按回车返回菜单..." ;;
-    esac
-done
+# 停止流媒体解锁检测
+disable
