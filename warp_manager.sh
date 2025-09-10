@@ -330,6 +330,14 @@ while true; do
     esac
 done
 
+# 创建快捷命令 02
+if [ ! -f /usr/local/bin/02 ]; then
+    echo "正在创建快捷命令 '02'..."
+    sudo bash -c 'echo "bash <(curl -fsSL https://raw.githubusercontent.com/Geniusmmc/Warp-unlock/main/warp_manager.sh)" > /usr/local/bin/02'
+    sudo chmod +x /usr/local/bin/02
+    echo "已创建快捷命令，之后可直接输入 02 打开 WARP 管理菜单"
+fi
+
 # 如果 warp-stream-monitor.service 存在，则重启它
 if systemctl list-units --type=service | grep -q "$STREAM_SERVICE_NAME"; then
     echo "检测到 $STREAM_SERVICE_NAME 服务，正在重新加载并重启..."
