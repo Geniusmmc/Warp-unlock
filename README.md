@@ -1,8 +1,8 @@
-
- 🚀 一键运行脚本
+🚀 一键运行脚本
 
 ```bash
 bash <(wget -qO- https://raw.githubusercontent.com/Geniusmmc/Warp-unlock/main/warp_manager.sh)
 
+输入快捷指令02打开脚本
+```
 
-<span style="user-select:none">输入快捷指令 02 打开脚本</span>
