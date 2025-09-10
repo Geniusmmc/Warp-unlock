@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cloudflare WARP 管理工具（修正版）
+# Cloudflare WARP 管理工具（最终修正版）
 # 功能：安装/配置 WARP IPv6（支持 WARP+）、卸载接口、卸载脚本、检测状态、自动检测并重启、流媒体解锁检测
 
 set -u
@@ -7,18 +7,20 @@ SCRIPT_PATH="/usr/local/bin/warp"
 SERVICE_NAME="warp-monitor.service"
 STREAM_SERVICE_NAME="warp-stream-monitor.service"
 
-# 检测 WARP 状态
+# 检测 WARP 状态（修正版）
 check_warp_status() {
     local status ipv4 ipv6
+
     if ip link show warp >/dev/null 2>&1; then
         status="运行中 ✅"
-        ipv4=$(curl -4 -s --max-time 5 https://ip.gs || echo "不可用")
-        ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
     else
         status="未运行 ❌"
-        ipv4="无"
-        ipv6="无"
     fi
+
+    # 不管 WARP 是否运行，都检测出口 IPv4/IPv6
+    ipv4=$(curl -4 -s --max-time 5 https://ip.gs || echo "不可用")
+    ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
+
     echo "=== WARP 状态: $status ==="
     echo "出口 IPv4: $ipv4"
     echo "出口 IPv6: $ipv6"
@@ -70,22 +72,27 @@ install_warp() {
     TMPDIR=$(mktemp -d)
     pushd "$TMPDIR" >/dev/null
     ARCHIVE="wgcf_${WGCF_VER#v}_linux_${WGCF_ARCH}.tar.gz"
-    URL="https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/${ARCHIVE}"
-    echo "下载 $URL"
-    if ! wget -q --show-progress "$URL" -O wgcf.tar.gz; then
-        echo "下载失败，请检查网络或手动下载 $URL"
-        popd >/dev/null
-        rm -rf "$TMPDIR"
-        read -p "按回车返回菜单..."
-        return
+
+    URL1="https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/${ARCHIVE}"
+    URL2="https://ghproxy.com/${URL1}"
+
+    echo "尝试下载 $URL1"
+    if ! wget -q --show-progress "$URL1" -O wgcf.tar.gz; then
+        echo "官方源下载失败，尝试镜像源 $URL2"
+        if ! wget -q --show-progress "$URL2" -O wgcf.tar.gz; then
+            echo "下载失败，请手动下载 $URL1"
+            popd >/dev/null
+            rm -rf "$TMPDIR"
+            read -p "按回车返回菜单..."
+            return
+        fi
     fi
+
     tar -xzf wgcf.tar.gz
-    # 找到二进制并安装
     if [ -f ./wgcf ]; then
         chmod +x ./wgcf
         sudo mv ./wgcf /usr/local/bin/wgcf
     else
-        # 在归档中可能存在子目录
         BIN_PATH=$(find . -type f -name wgcf -perm -111 | head -n1 || true)
         if [ -n "$BIN_PATH" ]; then
             chmod +x "$BIN_PATH"
@@ -101,8 +108,7 @@ install_warp() {
     popd >/dev/null
     rm -rf "$TMPDIR"
 
-    echo "=== 注册 WARP 账户（如需交互请按提示） ==="
-    # 在当前用户目录下创建 wgcf 文件，若需 root 可改用 sudo -E
+    echo "=== 注册 WARP 账户 ==="
     if [ ! -f wgcf-account.toml ]; then
         wgcf register --accept-tos || { echo "wgcf register 失败"; read -p "按回车返回菜单..."; return; }
     fi
@@ -110,29 +116,23 @@ install_warp() {
     read -p "是否输入 WARP+ License Key? (y/N): " use_warp_plus
     if [[ "$use_warp_plus" =~ ^[Yy]$ ]]; then
         read -p "请输入你的 WARP+ License Key: " warp_plus_key
-        # 如果文件中已有 license_key，替换；否则追加
         if grep -q '^license_key' wgcf-account.toml 2>/dev/null; then
             sed -i "s/^license_key.*/license_key = \"$warp_plus_key\"/" wgcf-account.toml
         else
             echo "license_key = \"$warp_plus_key\"" >> wgcf-account.toml
         fi
-        echo "已写入 WARP+ 授权密钥（wgcf-account.toml）"
+        echo "已写入 WARP+ 授权密钥"
     fi
 
     echo "=== 生成 WireGuard 配置文件 ==="
     wgcf generate || { echo "wgcf generate 失败"; read -p "按回车返回菜单..."; return; }
 
-    # 确保 /etc/wireguard 存在
     sudo mkdir -p /etc/wireguard
-    # 提取生成配置中的 IPv4 地址（形如 192.0.2.2/32）
     if [ -f wgcf-profile.conf ]; then
-        # 查找首个 IPv4 地址（Address 行中可能包含多个）
         WARP_IPV4=$(awk -F' ' '/^Address/{for(i=2;i<=NF;i++){ if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/){print $i; exit}}}' wgcf-profile.conf || true)
         if [ -z "$WARP_IPV4" ]; then
-            echo "未能从 wgcf-profile.conf 提取到 IPv4 地址，保留默认路由设置"
             sudo mv wgcf-profile.conf /etc/wireguard/warp.conf
         else
-            # 将 0.0.0.0/0 替换为仅 IPv4 地址（谨慎替换）
             sed "s/0\.0\.0\.0\/0/${WARP_IPV4}/g" wgcf-profile.conf | sudo tee /etc/wireguard/warp.conf >/dev/null
         fi
         sudo chmod 600 /etc/wireguard/warp.conf
@@ -180,8 +180,6 @@ enable_auto_restart() {
         return
     fi
 
-    echo "=== 开启 WARP 接口异常检测并自动重启（间隔 ${interval} 秒） ==="
-    # 使用未展开的 $(date)（写入脚本时需转义），但让 ${interval} 被当前 shell 展开
     sudo bash -c "cat > /usr/local/bin/warp-monitor.sh" <<EOF
 #!/bin/bash
 while true; do
@@ -217,7 +215,6 @@ UNIT
 
 # 停止自动检测
 disable_auto_restart() {
-    echo "=== 停止 WARP 接口异常检测 ==="
     sudo systemctl disable --now "$SERVICE_NAME" 2>/dev/null || true
     sudo rm -f /etc/systemd/system/"$SERVICE_NAME"
     sudo rm -f /usr/local/bin/warp-monitor.sh
@@ -226,9 +223,8 @@ disable_auto_restart() {
     read -p "按回车返回菜单..."
 }
 
-# 开启流媒体解锁检测（Netflix & Disney+）
+# 开启流媒体解锁检测
 enable_stream_monitor() {
-    echo "=== 开启流媒体解锁检测（每 30 分钟检测一次） ==="
     sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
 while true; do
@@ -241,7 +237,7 @@ while true; do
     else
         echo "$(date) 流媒体检测正常（Netflix: $nf, Disney+: $ds）"
     fi
-    sleep 1800   # 30 分钟检测一次
+    sleep 1800
 done
 EOF
     sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
@@ -267,7 +263,6 @@ UNIT
 
 # 停止流媒体检测
 disable_stream_monitor() {
-    echo "=== 停止流媒体解锁检测 ==="
     sudo systemctl disable --now "$STREAM_SERVICE_NAME" 2>/dev/null || true
     sudo rm -f /etc/systemd/system/"$STREAM_SERVICE_NAME"
     sudo rm -f /usr/local/bin/warp-stream-monitor.sh
