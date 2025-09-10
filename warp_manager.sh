@@ -198,8 +198,8 @@ while true; do
     if [ "$nf" != "200" ] || [ "$ds" != "200" ]; then
         ((fail_count++))
         echo "$(date) [IPv6: $ipv6] ❌ 未解锁（Netflix: $nf, Disney+: $ds），连续失败 ${fail_count} 次 → 更换 WARP IP..."
-        wg-quick down warp 2>/dev/null
-        wg-quick up warp
+        wg-quick down warp >/dev/null 2>&1
+        wg-quick up warp   >/dev/null 2>&1
         echo "$(date) 已更换 WARP IP，等待 10 秒后继续检测..."
         sleep 10
         if [ "$fail_count" -ge "$MAX_FAILS" ]; then
@@ -213,6 +213,7 @@ while true; do
         sleep 1800
     fi
 done
+
 EOF
     sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
 
