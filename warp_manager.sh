@@ -2,10 +2,24 @@
 # Cloudflare WARP 管理工具
 # 功能：安装/配置 WARP IPv6（支持 WARP+）、卸载接口、卸载脚本、检测状态、自动检测异常重启、流媒体解锁检测
 # 接口名 warp，保留本地 IPv4，自动检测架构，支持开机自启，安装后自动注册 warp 命令
+# 如果 warp-stream-monitor.service 存在，则重启它
 
-SCRIPT_PATH="/usr/local/bin/warp"
 SERVICE_NAME="warp-monitor.service"
 STREAM_SERVICE_NAME="warp-stream-monitor.service"
+
+if systemctl list-units --type=service | grep -q "$STREAM_SERVICE_NAME"; then
+    echo "检测到 $STREAM_SERVICE_NAME 服务，正在重新加载并重启..."
+    sudo systemctl daemon-reload
+    sudo systemctl restart $STREAM_SERVICE_NAME
+fi
+
+# 创建快捷命令 02（在线获取最新版脚本）
+if [ ! -f /usr/local/bin/02 ]; then
+    echo "正在创建快捷命令 '02'..."
+    sudo bash -c 'echo "bash <(curl -fsSL https://raw.githubusercontent.com/Geniusmmc/Warp-unlock/main/warp_manager.sh)" > /usr/local/bin/02'
+    sudo chmod +x /usr/local/bin/02
+    echo "已创建快捷命令，之后可直接输入 02 打开 WARP 管理菜单"
+fi
 
 # 检测 WARP 状态
 check_warp_status() {
@@ -330,18 +344,5 @@ while true; do
     esac
 done
 
-# 如果 warp-stream-monitor.service 存在，则重启它
-if systemctl list-units --type=service | grep -q "$STREAM_SERVICE_NAME"; then
-    echo "检测到 $STREAM_SERVICE_NAME 服务，正在重新加载并重启..."
-    sudo systemctl daemon-reload
-    sudo systemctl restart $STREAM_SERVICE_NAME
-fi
 
-# 创建快捷命令 02（在线获取最新版脚本）
-if [ ! -f /usr/local/bin/02 ]; then
-    echo "正在创建快捷命令 '02'..."
-    sudo bash -c 'echo "bash <(curl -fsSL https://raw.githubusercontent.com/Geniusmmc/Warp-unlock/main/warp_manager.sh)" > /usr/local/bin/02'
-    sudo chmod +x /usr/local/bin/02
-    echo "已创建快捷命令，之后可直接输入 02 打开 WARP 管理菜单"
-fi
 
