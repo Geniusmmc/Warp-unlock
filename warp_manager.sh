@@ -172,8 +172,9 @@ disable_auto_restart() {
     read -p "按回车返回菜单..."
 }
 
+# 开启流媒体解锁检测（Netflix & Disney+，仅 IPv6）
 enable_stream_monitor() {
-    echo "=== 开启流媒体解锁检测（未解锁立即换 IP，解锁后 30 分钟检测一次） ==="
+    echo "=== 开启流媒体解锁检测（仅 IPv6，未解锁立即换 IP，解锁后 30 分钟检测一次） ==="
 
     # 先立即检测一次（只检测 IPv6）
     ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
@@ -184,22 +185,16 @@ enable_stream_monitor() {
     echo "Disney+ 检测结果: $ds"
     echo "======================================"
 
-    # 写入后台检测脚本
+    # 写入后台检测脚本（只检测 IPv6）
     sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
-# 只检测 IPv6 出口和流媒体解锁情况
 MAX_FAILS=5
 PAUSE_TIME=300
 fail_count=0
-
 while true; do
-    # 获取当前出口 IPv6
     ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
-
-    # 用 IPv6 检测 Netflix 和 Disney+
     nf=$(curl -6 -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
     ds=$(curl -6 -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
-
     if [ "$nf" != "200" ] || [ "$ds" != "200" ]; then
         ((fail_count++))
         echo "$(date) [IPv6: $ipv6] ❌ 未解锁（Netflix: $nf, Disney+: $ds），连续失败 ${fail_count} 次 → 更换 WARP IP..."
@@ -219,12 +214,12 @@ while true; do
     fi
 done
 EOF
-
     sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
 
+    # 写入 systemd 服务
     sudo bash -c "cat > /etc/systemd/system/$STREAM_SERVICE_NAME" <<EOF
 [Unit]
-Description=WARP 流媒体解锁检测（IPv6）
+Description=WARP 流媒体解锁检测（仅 IPv6）
 After=network.target
 
 [Service]
@@ -237,10 +232,13 @@ EOF
 
     sudo systemctl daemon-reload
     sudo systemctl enable --now $STREAM_SERVICE_NAME
-    echo "流媒体解锁检测已开启（IPv6 模式）"
+
+    echo "流媒体解锁检测已开启（仅 IPv6）：未解锁立即换 IP，解锁后 30 分钟检测一次"
     echo "=== 正在实时显示检测结果（按 Ctrl+C 退出查看，但服务会继续后台运行） ==="
     sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
 }
+
+
 
 
 
