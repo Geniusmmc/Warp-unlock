@@ -191,32 +191,39 @@ disable_auto_restart() {
 
 # 开启流媒体解锁检测（仅 IPv6）
 enable_stream_monitor() {
-    echo "=== 正在配置并启动流媒体解锁检测（仅 IPv6，未解锁立即换 IP，解锁后 30 分钟检测一次） ==="
-    echo "=== 正在写入后台检测脚本..."
+    echo "=== 开启流媒体解锁检测（仅 IPv6） ==="
 
     sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
-MAX_FAILS=5
-PAUSE_TIME=300
-fail_count=0
-NETFLIX_SG_ID="81215567"
+# WARP 流媒体解锁检测脚本
+IFACE="warp"
+RETRY_COOLDOWN=10
+MAX_CONSEC_FAILS=5
+PAUSE_ON_MANY_FAILS=300
+SLEEP_WHEN_UNLOCKED=1800
+CHECK_INTERVAL=60
+LOG_PREFIX="[WARP-STREAM]"
+
+log() { echo "$(date '+%F %T') ${LOG_PREFIX} $*"; }
+get_ipv6() { curl -6 -s --max-time 5 https://ip.gs || echo "不可用"; }
 
 check_netflix() {
-    # 优先检测新加坡独占非自制剧
-    local result_sg=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${NETFLIX_SG_ID}")
-    if [ "$result_sg" = "200" ]; then
-        echo "√(SG)"
+    local sg_id="81215567"
+    local original_id="80018499"
+    local code_sg
+    code_sg=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" \
+        "https://www.netflix.com/title/${sg_id}")
+    if [ "$code_sg" = "200" ]; then
+        echo "√(完整)"
         return 0
     fi
-    
-    # 备用：测试自制剧以判断是否为仅自制剧解锁
-    local original_id="80018499"
-    local result_orig=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${original_id}")
-    if [ "$result_orig" = "200" ]; then
+    local code_orig
+    code_orig=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" \
+        "https://www.netflix.com/title/${original_id}")
+    if [ "$code_orig" = "200" ]; then
         echo "×(仅自制剧)"
         return 1
     fi
-
     echo "×"
     return 1
 }
@@ -225,21 +232,19 @@ check_disney() {
     local token=$(curl -6 -s --max-time 10 "https://global.edge.bamgrid.com/token" \
         -H "authorization: Bearer ZGlzbmV5JmF1dGg9dG9rZW4=" \
         -H "content-type: application/x-www-form-urlencoded" \
-        --data "grant_type=client_credentials" | grep -o '"access_token":"[^"]*"' | cut -d '"' -f4)
-
+        --data "grant_type=client_credentials" \
+        | grep -o '"access_token":"[^"]*"' | cut -d '"' -f4)
     if [ -z "$token" ]; then
         echo "×"
         return 1
     fi
-
     local region=$(curl -6 -s --max-time 10 "https://global.edge.bamgrid.com/graph/v1/device/graphql" \
         -H "authorization: Bearer $token" \
         -H "content-type: application/json" \
         --data '{"query":"mutation {registerDevice(input: {deviceFamily: DESKTOP, applicationRuntime: CHROME, deviceProfile: WINDOWS, appId: \"disneyplus\", appVersion: \"1.0.0\", deviceLanguage: \"en\", deviceOs: \"Windows 10\"}) {device {id}}}"}' \
         | grep -o '"countryCode":"[^"]*"' | cut -d '"' -f4)
-
     if [ -n "$region" ]; then
-        echo "√"
+        echo "√($region)"
         return 0
     else
         echo "×"
@@ -247,32 +252,31 @@ check_disney() {
     fi
 }
 
+fail_count=0
 while true; do
-    ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
+    ipv6=$(get_ipv6)
     nf_status=$(check_netflix)
     nf_ok=$?
     ds_status=$(check_disney)
     ds_ok=$?
-
     if [ $nf_ok -ne 0 ] || [ $ds_ok -ne 0 ]; then
         ((fail_count++))
-        echo "$(date) [IPv6: $ipv6] ❌ 未解锁（Netflix: $nf_status, Disney+: $ds_status），连续失败 ${fail_count} 次 → 更换 WARP IP..."
-        wg-quick down warp >/dev/null 2>&1
-        wg-quick up warp    >/dev/null 2>&1
-        echo "$(date) 已更换 WARP IP，等待 10 秒后继续检测..."
-        sleep 10
-        if [ "$fail_count" -ge "$MAX_FAILS" ]; then
-            echo "$(date) ⚠️ 连续失败 ${MAX_FAILS} 次，暂停 ${PAUSE_TIME} 秒..."
-            sleep $PAUSE_TIME
+        log "[IPv6: $ipv6] ❌ 未解锁（Netflix: $nf_status, Disney+: $ds_status），连续失败 ${fail_count} 次 → 更换 WARP IP..."
+        wg-quick down $IFACE >/dev/null 2>&1
+        wg-quick up $IFACE   >/dev/null 2>&1
+        sleep $RETRY_COOLDOWN
+        if [ "$fail_count" -ge "$MAX_CONSEC_FAILS" ]; then
+            log "⚠️ 连续失败 ${MAX_CONSEC_FAILS} 次，暂停 ${PAUSE_ON_MANY_FAILS} 秒..."
+            sleep $PAUSE_ON_MANY_FAILS
             fail_count=0
         fi
     else
-        echo "$(date) [IPv6: $ipv6] ✅ 已解锁（Netflix: $nf_status, Disney+: $ds_status），30 分钟后检测"
+        log "[IPv6: $ipv6] ✅ 已解锁（Netflix: $nf_status, Disney+: $ds_status），${SLEEP_WHEN_UNLOCKED} 秒后检测"
         fail_count=0
-        sleep 1800
+        sleep $SLEEP_WHEN_UNLOCKED
     fi
+    sleep $CHECK_INTERVAL
 done
-
 EOF
 
     sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
@@ -294,20 +298,10 @@ EOF
     sudo systemctl enable --now $STREAM_SERVICE_NAME
 
     echo "流媒体解锁检测已开启（仅 IPv6）：未解锁立即换 IP，解锁后 30 分钟检测一次"
-    echo "=== 正在实时显示检测结果（按 Ctrl+C 退出查看，但服务会继续后台运行） ==="
+    echo "=== 实时日志（Ctrl+C 退出查看，服务继续后台运行） ==="
     sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
 }
 
-# 停止流媒体检测
-disable_stream_monitor() {
-    echo "=== 停止流媒体解锁检测 ==="
-    sudo systemctl disable --now $STREAM_SERVICE_NAME 2>/dev/null || true
-    sudo rm -f /etc/systemd/system/$STREAM_SERVICE_NAME
-    sudo rm -f /usr/local/bin/warp-stream-monitor.sh
-    sudo systemctl daemon-reload
-    echo "流媒体解锁检测已停止"
-    read -p "按回车返回菜单..."
-}
 
 # 主循环
 while true; do
