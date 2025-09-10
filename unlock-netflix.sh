@@ -2,15 +2,16 @@
 
 # 要测试的 Netflix 剧集
 # 原创剧（全区域可看），第三方授权剧（受区域限制）
+# Netflix 测试：第三方授权剧在 SG 可看
 NETFLIX_TESTS=(
-  "80057281:stranger-things"      # Netflix 原创
-  "70153404:friends"              # 非自制授权剧
+  "80057281:stranger-things"      # 原创
+  "70143836:modern-family"        # 在新加坡开放的授权剧（示例 ID）
 )
 
-# 要测试的 Disney+ 剧集
+# Disney+ 测试：授权纪录片或剧集
 DISNEY_TESTS=(
-  "series/the-mandalorian:mandalorian"   # Disney+ 原创
-  "series/the-simpsons:the-simpsons"     # 非迪士尼原创授权
+  "series/the-mandalorian:mandalorian" 
+  "series/planet-earth:planet-earth"      # 授权纪录片（示例 Slug）
 )
 
 # 支持 IPv4 和 IPv6
