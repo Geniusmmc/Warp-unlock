@@ -204,15 +204,62 @@ enable_stream_monitor() {
 MAX_FAILS=5
 PAUSE_TIME=300
 fail_count=0
+
+check_netflix() {
+    # 测试非自制剧（例如《The Witcher》）
+    local test_id="81280792"
+    local result=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${test_id}")
+    if [ "$result" = "200" ]; then
+        echo "√"  # 完整解锁
+        return 0
+    fi
+
+    # 测试自制剧（例如《Stranger Things》）
+    local original_id="80018499"
+    result=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${original_id}")
+    if [ "$result" = "200" ]; then
+        echo "×(仅自制剧)"
+        return 1
+    fi
+
+    echo "×"
+    return 1
+}
+
+check_disney() {
+    local token=$(curl -6 -s --max-time 10 "https://global.edge.bamgrid.com/token" \
+        -H "authorization: Bearer ZGlzbmV5JmF1dGg9dG9rZW4=" \
+        -H "content-type: application/x-www-form-urlencoded" \
+        --data "grant_type=client_credentials" | grep -o '"access_token":"[^"]*"' | cut -d '"' -f4)
+
+    if [ -z "$token" ]; then
+        echo "×"
+        return 1
+    fi
+
+    local region=$(curl -6 -s --max-time 10 "https://global.edge.bamgrid.com/graph/v1/device/graphql" \
+        -H "authorization: Bearer $token" \
+        -H "content-type: application/json" \
+        --data '{"query":"mutation {registerDevice(input: {deviceFamily: DESKTOP, applicationRuntime: CHROME, deviceProfile: WINDOWS, appId: \"disneyplus\", appVersion: \"1.0.0\", deviceLanguage: \"en\", deviceOs: \"Windows 10\"}) {device {id}}}"}' \
+        | grep -o '"countryCode":"[^"]*"' | cut -d '"' -f4)
+
+    if [ -n "$region" ]; then
+        echo "√"
+        return 0
+    else
+        echo "×"
+        return 1
+    fi
+}
+
 while true; do
     ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
-    nf_code=$(curl -6 -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
-    ds_code=$(curl -6 -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
+    nf_status=$(check_netflix)
+    nf_ok=$?
+    ds_status=$(check_disney)
+    ds_ok=$?
 
-    if [ "$nf_code" = "200" ]; then nf_status="√"; else nf_status="×"; fi
-    if [ "$ds_code" = "200" ]; then ds_status="√"; else ds_status="×"; fi
-
-    if [ "$nf_code" != "200" ] || [ "$ds_code" != "200" ]; then
+    if [ $nf_ok -ne 0 ] || [ $ds_ok -ne 0 ]; then
         ((fail_count++))
         echo "$(date) [IPv6: $ipv6] ❌ 未解锁（Netflix: $nf_status, Disney+: $ds_status），连续失败 ${fail_count} 次 → 更换 WARP IP..."
         wg-quick down warp >/dev/null 2>&1
@@ -230,30 +277,6 @@ while true; do
         sleep 1800
     fi
 done
-EOF
-
-    sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
-
-    sudo bash -c "cat > /etc/systemd/system/$STREAM_SERVICE_NAME" <<EOF
-[Unit]
-Description=WARP 流媒体解锁检测（仅 IPv6）
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/warp-stream-monitor.sh
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now $STREAM_SERVICE_NAME
-
-    echo "流媒体解锁检测已开启（仅 IPv6）：未解锁立即换 IP，解锁后 30 分钟检测一次"
-    echo "=== 正在实时显示检测结果（按 Ctrl+C 退出查看，但服务会继续后台运行） ==="
-    sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
-}
 
 
 
