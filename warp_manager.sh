@@ -191,35 +191,39 @@ disable_auto_restart() {
 
 # 开启流媒体解锁检测（仅 IPv6）
 enable_stream_monitor() {
-    echo "=== 开启流媒体解锁检测（仅 IPv6） ==="
+    color_echo green "=== 开启流媒体解锁检测（仅 IPv6） ==="
 
+    # 将检测脚本写入文件
     sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
 # WARP 流媒体解锁检测脚本
+# 检测 IPv6 是否解锁 Netflix 和 Disney+，如果未解锁则更换 IP
 IFACE="warp"
-RETRY_COOLDOWN=10
-MAX_CONSEC_FAILS=5
-PAUSE_ON_MANY_FAILS=300
-SLEEP_WHEN_UNLOCKED=1800
-CHECK_INTERVAL=60
+RETRY_COOLDOWN=10          # 每次更换 IP 后的等待时间
+MAX_CONSEC_FAILS=10        # 连续失败次数上限
+PAUSE_ON_MANY_FAILS=1800   # 达到失败上限后的暂停时间（30分钟）
+SLEEP_WHEN_UNLOCKED=1800   # 解锁成功后的下一次检测间隔（30分钟）
 LOG_PREFIX="[WARP-STREAM]"
 
+# 统一的日志输出函数
 log() { echo "$(date '+%F %T') ${LOG_PREFIX} $*"; }
+
+# 获取 IPv6 地址
 get_ipv6() { curl -6 -s --max-time 5 https://ip.gs || echo "不可用"; }
 
+# 检测 Netflix 解锁状态
 check_netflix() {
+    # 使用新加坡独占影片ID进行检测
     local sg_id="81215567"
-    local original_id="80018499"
+    local original_id="80018499" # Netflix自制剧ID
     local code_sg
-    code_sg=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" \
-        "https://www.netflix.com/title/${sg_id}")
+    code_sg=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${sg_id}")
     if [ "$code_sg" = "200" ]; then
         echo "√(完整)"
         return 0
     fi
     local code_orig
-    code_orig=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" \
-        "https://www.netflix.com/title/${original_id}")
+    code_orig=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${original_id}")
     if [ "$code_orig" = "200" ]; then
         echo "×(仅自制剧)"
         return 1
@@ -228,6 +232,7 @@ check_netflix() {
     return 1
 }
 
+# 检测 Disney+ 解锁状态
 check_disney() {
     local token=$(curl -6 -s --max-time 10 "https://global.edge.bamgrid.com/token" \
         -H "authorization: Bearer ZGlzbmV5JmF1dGg9dG9rZW4=" \
@@ -259,11 +264,12 @@ while true; do
     nf_ok=$?
     ds_status=$(check_disney)
     ds_ok=$?
+    
     if [ $nf_ok -ne 0 ] || [ $ds_ok -ne 0 ]; then
         ((fail_count++))
         log "[IPv6: $ipv6] ❌ 未解锁（Netflix: $nf_status, Disney+: $ds_status），连续失败 ${fail_count} 次 → 更换 WARP IP..."
         wg-quick down $IFACE >/dev/null 2>&1
-        wg-quick up $IFACE   >/dev/null 2>&1
+        wg-quick up $IFACE >/dev/null 2>&1
         sleep $RETRY_COOLDOWN
         if [ "$fail_count" -ge "$MAX_CONSEC_FAILS" ]; then
             log "⚠️ 连续失败 ${MAX_CONSEC_FAILS} 次，暂停 ${PAUSE_ON_MANY_FAILS} 秒..."
@@ -275,12 +281,12 @@ while true; do
         fail_count=0
         sleep $SLEEP_WHEN_UNLOCKED
     fi
-    sleep $CHECK_INTERVAL
 done
 EOF
-
+    # 设置脚本可执行权限
     sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
 
+    # 创建并启用 systemd 服务
     sudo bash -c "cat > /etc/systemd/system/$STREAM_SERVICE_NAME" <<EOF
 [Unit]
 Description=WARP 流媒体解锁检测（仅 IPv6）
@@ -297,7 +303,7 @@ EOF
     sudo systemctl daemon-reload
     sudo systemctl enable --now $STREAM_SERVICE_NAME
 
-    echo "流媒体解锁检测已开启（仅 IPv6）：未解锁立即换 IP，解锁后 30 分钟检测一次"
+    color_echo green "流媒体解锁检测已开启。未解锁立即换 IP，解锁后 30 分钟检测一次。"
     echo "=== 实时日志（Ctrl+C 退出查看，服务继续后台运行） ==="
     sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
 }
