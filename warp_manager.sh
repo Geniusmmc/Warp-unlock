@@ -175,6 +175,19 @@ disable_auto_restart() {
 # 开启流媒体解锁检测（Netflix & Disney+）
 enable_stream_monitor() {
     echo "=== 开启流媒体解锁检测（未解锁立即换 IP，解锁后 30 分钟检测一次） ==="
+
+    # 先立即检测一次
+    ipv4=$(curl -4 -s --max-time 5 https://ip.gs || echo "不可用")
+    ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
+    nf=$(curl -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
+    ds=$(curl -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
+    echo "当前出口 IPv4: $ipv4"
+    echo "当前出口 IPv6: $ipv6"
+    echo "Netflix 检测结果: $nf"
+    echo "Disney+ 检测结果: $ds"
+    echo "======================================"
+
+    # 写入后台检测脚本
     sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
 MAX_FAILS=5
@@ -206,6 +219,7 @@ done
 EOF
     sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
 
+    # 写入 systemd 服务
     sudo bash -c "cat > /etc/systemd/system/$STREAM_SERVICE_NAME" <<EOF
 [Unit]
 Description=WARP 流媒体解锁检测
@@ -221,11 +235,11 @@ EOF
 
     sudo systemctl daemon-reload
     sudo systemctl enable --now $STREAM_SERVICE_NAME
+
     echo "流媒体解锁检测已开启：未解锁立即换 IP，解锁后 30 分钟检测一次"
     echo "=== 正在实时显示检测结果（按 Ctrl+C 退出查看，但服务会继续后台运行） ==="
     sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
 }
-
 
 
 # 主循环
