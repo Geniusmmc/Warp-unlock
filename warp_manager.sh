@@ -172,30 +172,12 @@ disable_auto_restart() {
     read -p "按回车返回菜单..."
 }
 
-# 开启流媒体解锁检测（Netflix & Disney+，仅 IPv6）
+# 开启流媒体解锁检测（仅 IPv6）
 enable_stream_monitor() {
     echo "=== 开启流媒体解锁检测（仅 IPv6，未解锁立即换 IP，解锁后 30 分钟检测一次） ==="
 
     # 先立即检测一次（只检测 IPv6）
     ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
-    nf=$(curl -6 -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
-    ds=$(curl -6 -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
-    echo "当前出口 IPv6: $ipv6"
-    echo "Netflix 检测结果: $nf"
-    echo "Disney+ 检测结果: $ds"
-    echo "======================================"
-
-    # 写入后台检测脚本（只检测 IPv6）
-    sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
-#!/bin/bash
-MAX_FAILS=5
-PAUSE_TIME=300
-fail_count=0
-
-while true; do
-    ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
-
-    # 获取状态码
     nf_code=$(curl -6 -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
     ds_code=$(curl -6 -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
 
@@ -205,14 +187,31 @@ while true; do
     else
         nf_status="×"
     fi
-
     if [ "$ds_code" = "200" ]; then
         ds_status="√"
     else
         ds_status="×"
     fi
 
-    # 检测逻辑
+    echo "当前出口 IPv6: $ipv6"
+    echo "Netflix 检测结果: $nf_status"
+    echo "Disney+ 检测结果: $ds_status"
+    echo "======================================"
+
+    # 下面写入后台检测脚本（保持符号输出）
+    sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
+#!/bin/bash
+MAX_FAILS=5
+PAUSE_TIME=300
+fail_count=0
+while true; do
+    ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
+    nf_code=$(curl -6 -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
+    ds_code=$(curl -6 -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
+
+    if [ "$nf_code" = "200" ]; then nf_status="√"; else nf_status="×"; fi
+    if [ "$ds_code" = "200" ]; then ds_status="√"; else ds_status="×"; fi
+
     if [ "$nf_code" != "200" ] || [ "$ds_code" != "200" ]; then
         ((fail_count++))
         echo "$(date) [IPv6: $ipv6] ❌ 未解锁（Netflix: $nf_status, Disney+: $ds_status），连续失败 ${fail_count} 次 → 更换 WARP IP..."
@@ -231,11 +230,10 @@ while true; do
         sleep 1800
     fi
 done
-
 EOF
+
     sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
 
-    # 写入 systemd 服务
     sudo bash -c "cat > /etc/systemd/system/$STREAM_SERVICE_NAME" <<EOF
 [Unit]
 Description=WARP 流媒体解锁检测（仅 IPv6）
@@ -256,6 +254,7 @@ EOF
     echo "=== 正在实时显示检测结果（按 Ctrl+C 退出查看，但服务会继续后台运行） ==="
     sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
 }
+
 
 
 
