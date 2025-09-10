@@ -178,7 +178,7 @@ enable_stream_monitor() {
 
     # 先立即检测一次（只检测 IPv6）
     ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
-    nf_code=$(curl -6 -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
+    nf_code=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${sg_id}")
     ds_code=$(curl -6 -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
 
     # 转换成符号
