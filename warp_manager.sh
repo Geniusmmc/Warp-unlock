@@ -173,10 +173,37 @@ enable_stream_monitor() {
     echo "=== 开启流媒体解锁检测（每 30 分钟检测一次） ==="
     sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
-check_stream() {
+while true; do
     nf=$(curl -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
     ds=$(curl -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
     if [ "$nf" != "200" ] || [ "$ds" != "200" ]; then
         echo "$(date) 检测到流媒体未解锁，正在更换 WARP IP..."
         wg-quick down warp 2>/dev/null
-        wg-
+        wg-quick up warp
+    else
+        echo "$(date) 流媒体检测正常（Netflix: $nf, Disney+: $ds）"
+    fi
+    sleep 1800   # 30 分钟检测一次
+done
+EOF
+    sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
+
+    sudo bash -c "cat > /etc/systemd/system/$STREAM_SERVICE_NAME" <<EOF
+[Unit]
+Description=WARP 流媒体解锁检测
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/warp-stream-monitor.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now $STREAM_SERVICE_NAME
+    echo "流媒体解锁检测已开启，每 30 分钟检测一次"
+    read -p "按回车返回菜单..."
+}
+
