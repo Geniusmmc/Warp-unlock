@@ -174,20 +174,43 @@ disable_auto_restart() {
 
 # 开启流媒体解锁检测（Netflix & Disney+）
 enable_stream_monitor() {
-    echo "=== 开启流媒体解锁检测（每 30 分钟检测一次） ==="
+    echo "=== 开启流媒体解锁检测（未解锁立即换 IP，解锁后 30 分钟检测一次） ==="
     sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
+# 最大连续失败次数
+MAX_FAILS=5
+# 暂停时间（秒）
+PAUSE_TIME=300
+
+fail_count=0
+
 while true; do
+    # 获取当前出口 IPv4 和 IPv6
+    ipv4=$(curl -4 -s --max-time 5 https://ip.gs || echo "不可用")
+    ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
+
+    # 检测 Netflix 和 Disney+
     nf=$(curl -s --max-time 10 https://www.netflix.com/title/80018499 -o /dev/null -w "%{http_code}")
     ds=$(curl -s --max-time 10 https://www.disneyplus.com -o /dev/null -w "%{http_code}")
+
     if [ "$nf" != "200" ] || [ "$ds" != "200" ]; then
-        echo "$(date) 检测到流媒体未解锁，正在更换 WARP IP..."
+        ((fail_count++))
+        echo "$(date) [IPv4: $ipv4 | IPv6: $ipv6] ❌ 流媒体未解锁（Netflix: $nf, Disney+: $ds），连续失败 ${fail_count} 次 → 更换 WARP IP..."
         wg-quick down warp 2>/dev/null
         wg-quick up warp
+        echo "$(date) 已更换 WARP IP，等待 10 秒后继续检测..."
+        sleep 10
+
+        if [ "$fail_count" -ge "$MAX_FAILS" ]; then
+            echo "$(date) ⚠️ 连续失败次数已达 ${MAX_FAILS} 次，暂停 ${PAUSE_TIME} 秒再检测..."
+            sleep $PAUSE_TIME
+            fail_count=0
+        fi
     else
-        echo "$(date) 流媒体检测正常（Netflix: $nf, Disney+: $ds）"
+        echo "$(date) [IPv4: $ipv4 | IPv6: $ipv6] ✅ 流媒体检测正常（Netflix: $nf, Disney+: $ds），30 分钟后再次检测"
+        fail_count=0
+        sleep 1800
     fi
-    sleep 1800   # 30 分钟检测一次
 done
 EOF
     sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
@@ -207,9 +230,10 @@ EOF
 
     sudo systemctl daemon-reload
     sudo systemctl enable --now $STREAM_SERVICE_NAME
-    echo "流媒体解锁检测已开启，每 30 分钟检测一次"
+    echo "流媒体解锁检测已开启：未解锁立即换 IP，解锁后 30 分钟检测一次"
     read -p "按回车返回菜单..."
 }
+
 
 # 主循环
 while true; do
