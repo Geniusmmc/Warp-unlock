@@ -283,24 +283,58 @@ check_netflix() {
 }
 
 # Disney+ 检测
+# Disney+ 检测（完整流程）
 check_disney() {
-    local token=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
-        "https://global.edge.bamgrid.com/token" \
-        -H "authorization: Bearer ZGlzbmV5JmF1dGg9dG9rZW4=" \
-        -H "content-type: application/x-www-form-urlencoded" \
-        --data "grant_type=client_credentials" \
-        | grep -o '"access_token":"[^"]*"' | cut -d '"' -f4)
-    if [ -z "$token" ]; then
+    local pre_assertion assertion pre_cookie disney_cookie token_content is_banned is_403
+    local fake_content refresh_token disney_content tmp_result region in_supported
+
+    # 1. 模拟浏览器注册设备，获取 assertion
+    pre_assertion=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        -X POST "https://disney.api.edge.bamgrid.com/devices" \
+        -H "authorization: Bearer ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84" \
+        -H "content-type: application/json; charset=UTF-8" \
+        -d '{"deviceFamily":"browser","applicationRuntime":"chrome","deviceProfile":"windows","attributes":{}}')
+
+    assertion=$(echo "$pre_assertion" | python3 -m json.tool 2>/dev/null | grep assertion | cut -f4 -d'"')
+    if [ -z "$assertion" ]; then
         echo "×"
         return 1
     fi
-    local region=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
-        "https://global.edge.bamgrid.com/graph/v1/device/graphql" \
-        -H "authorization: Bearer $token" \
-        -H "content-type: application/json" \
-        --data '{"query":"mutation {registerDevice(input: {deviceFamily: DESKTOP, applicationRuntime: CHROME, deviceProfile: WINDOWS, appId: \"disneyplus\", appVersion: \"1.0.0\", deviceLanguage: \"en\", deviceOs: \"Windows 10\"}) {device {id}}}"}' \
-        | grep -o '"countryCode":"[^"]*"' | cut -d '"' -f4)
-    if [ -n "$region" ]; then
+
+    # 2. 用 assertion 获取访问 token
+    pre_cookie=$(curl -6 $NIC -fsL --max-time 10 \
+        "https://raw.githubusercontent.com/lmc999/RegionRestrictionCheck/main/cookies" | sed -n '1p')
+    disney_cookie=$(echo "$pre_cookie" | sed "s/DISNEYASSERTION/${assertion}/g")
+
+    token_content=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        -X POST "https://disney.api.edge.bamgrid.com/token" \
+        -H "authorization: Bearer ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84" \
+        -d "$disney_cookie")
+
+    # 3. 检查 token 是否被拒绝
+    is_banned=$(echo "$token_content" | python3 -m json.tool 2>/dev/null | grep 'forbidden-location')
+    is_403=$(echo "$token_content" | grep '403 ERROR')
+    if [ -n "$is_banned$is_403" ]; then
+        echo "×"
+        return 1
+    fi
+
+    # 4. 用 refresh_token 调 GraphQL API 获取地区信息
+    fake_content=$(curl -6 $NIC -fsL --max-time 10 \
+        "https://raw.githubusercontent.com/lmc999/RegionRestrictionCheck/main/cookies" | sed -n '8p')
+    refresh_token=$(echo "$token_content" | python3 -m json.tool 2>/dev/null | grep 'refresh_token' | awk '{print $2}' | cut -f2 -d'"')
+    disney_content=$(echo "$fake_content" | sed "s/ILOVEDISNEY/${refresh_token}/g")
+
+    tmp_result=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        -X POST "https://disney.api.edge.bamgrid.com/graph/v1/device/graphql" \
+        -H "authorization: ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84" \
+        -d "$disney_content")
+
+    region=$(echo "$tmp_result" | python3 -m json.tool 2>/dev/null | grep 'countryCode' | cut -f4 -d'"')
+    in_supported=$(echo "$tmp_result" | python3 -m json.tool 2>/dev/null | grep 'inSupportedLocation' | awk '{print $2}' | cut -f1 -d',')
+
+    # 5. 根据地区和支持状态判断是否解锁
+    if [[ -n "$region" && "$in_supported" == "true" ]]; then
         echo "√($region)"
         return 0
     else
@@ -308,6 +342,7 @@ check_disney() {
         return 1
     fi
 }
+
 
 fail_count=0
 while true; do
