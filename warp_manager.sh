@@ -255,7 +255,6 @@ check_netflix() {
         --write-out "%{http_code}" --output /dev/null \
         "https://www.netflix.com/title/${sg_id}")
     if [ "$code_sg" = "200" ]; then
-        # 获取地区代码
         region=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
             --write-out "%{redirect_url}" --output /dev/null \
             "https://www.netflix.com/title/${region_id}" \
@@ -282,25 +281,58 @@ check_netflix() {
     return 1
 }
 
-# Disney+ 检测
+# Disney+ 检测（完整流程）
 check_disney() {
-    local token=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
-        "https://global.edge.bamgrid.com/token" \
-        -H "authorization: Bearer ZGlzbmV5JmF1dGg9dG9rZW4=" \
-        -H "content-type: application/x-www-form-urlencoded" \
-        --data "grant_type=client_credentials" \
-        | grep -o '"access_token":"[^"]*"' | cut -d '"' -f4)
-    if [ -z "$token" ]; then
+    local pre_assertion assertion pre_cookie disney_cookie token_content is_banned is_403
+    local fake_content refresh_token disney_content tmp_result region in_supported
+
+    # 1. 模拟浏览器注册设备，获取 assertion
+    pre_assertion=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        -X POST "https://disney.api.edge.bamgrid.com/devices" \
+        -H "authorization: Bearer ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84" \
+        -H "content-type: application/json; charset=UTF-8" \
+        -d '{"deviceFamily":"browser","applicationRuntime":"chrome","deviceProfile":"windows","attributes":{}}')
+
+    assertion=$(echo "$pre_assertion" | python3 -m json.tool 2>/dev/null | grep assertion | cut -f4 -d'"')
+    if [ -z "$assertion" ]; then
         echo "×"
         return 1
     fi
-    local region=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
-        "https://global.edge.bamgrid.com/graph/v1/device/graphql" \
-        -H "authorization: Bearer $token" \
-        -H "content-type: application/json" \
-        --data '{"query":"mutation {registerDevice(input: {deviceFamily: DESKTOP, applicationRuntime: CHROME, deviceProfile: WINDOWS, appId: \"disneyplus\", appVersion: \"1.0.0\", deviceLanguage: \"en\", deviceOs: \"Windows 10\"}) {device {id}}}"}' \
-        | grep -o '"countryCode":"[^"]*"' | cut -d '"' -f4)
-    if [ -n "$region" ]; then
+
+    # 2. 用 assertion 获取访问 token
+    pre_cookie=$(curl -6 $NIC -fsL --max-time 10 \
+        "https://raw.githubusercontent.com/lmc999/RegionRestrictionCheck/main/cookies" | sed -n '1p')
+    disney_cookie=$(echo "$pre_cookie" | sed "s/DISNEYASSERTION/${assertion}/g")
+
+    token_content=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        -X POST "https://disney.api.edge.bamgrid.com/token" \
+        -H "authorization: Bearer ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84" \
+        -d "$disney_cookie")
+
+    # 3. 检查 token 是否被拒绝
+    is_banned=$(echo "$token_content" | python3 -m json.tool 2>/dev/null | grep 'forbidden-location')
+    is_403=$(echo "$token_content" | grep '403 ERROR')
+    if [ -n "$is_banned$is_403" ]; then
+        echo "×"
+        return 1
+    fi
+
+    # 4. 用 refresh_token 调 GraphQL API 获取地区信息
+    fake_content=$(curl -6 $NIC -fsL --max-time 10 \
+        "https://raw.githubusercontent.com/lmc999/RegionRestrictionCheck/main/cookies" | sed -n '8p')
+    refresh_token=$(echo "$token_content" | python3 -m json.tool 2>/dev/null | grep 'refresh_token' | awk '{print $2}' | cut -f2 -d'"')
+    disney_content=$(echo "$fake_content" | sed "s/ILOVEDISNEY/${refresh_token}/g")
+
+    tmp_result=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        -X POST "https://disney.api.edge.bamgrid.com/graph/v1/device/graphql" \
+        -H "authorization: ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84" \
+        -d "$disney_content")
+
+    region=$(echo "$tmp_result" | python3 -m json.tool 2>/dev/null | grep 'countryCode' | cut -f4 -d'"')
+    in_supported=$(echo "$tmp_result" | python3 -m json.tool 2>/dev/null | grep 'inSupportedLocation' | awk '{print $2}' | cut -f1 -d',')
+
+    # 5. 根据地区和支持状态判断是否解锁
+    if [[ -n "$region" && "$in_supported" == "true" ]]; then
         echo "√($region)"
         return 0
     else
@@ -317,50 +349,7 @@ while true; do
 
     ipv6=$(get_ipv6)
     nf_status=$(check_netflix)
-    nf_ok=$?
-    ds_status=$(check_disney)
-    ds_ok=$?
-    
-    if [ $nf_ok -ne 0 ] || [ $ds_ok -ne 0 ]; then
-        ((fail_count++))
-        log "[IPv6: $ipv6] ❌ 未解锁（Netflix: $nf_status, Disney+: $ds_status），连续失败 ${fail_count} 次 → 更换 WARP IP..."
-        wg-quick down $IFACE >/dev/null 2>&1
-        wg-quick up $IFACE >/dev/null 2>&1
-        sleep $RETRY_COOLDOWN
-        if [ "$fail_count" -ge "$MAX_CONSEC_FAILS" ]; then
-            log "⚠️ 连续失败 ${MAX_CONSEC_FAILS} 次，暂停 ${PAUSE_ON_MANY_FAILS} 秒..."
-            sleep $PAUSE_ON_MANY_FAILS
-            fail_count=0
-        fi
-    else
-        log "[IPv6: $ipv6] ✅ 已解锁（Netflix: $nf_status, Disney+: $ds_status），${SLEEP_WHEN_UNLOCKED} 秒后检测"
-        fail_count=0
-        sleep $SLEEP_WHEN_UNLOCKED
-    fi
-done
-EOF
-    sudo chmod +x /usr/local/bin/warp-stream-monitor.sh
 
-    sudo bash -c "cat > /etc/systemd/system/$STREAM_SERVICE_NAME" <<EOF
-[Unit]
-Description=WARP 流媒体解锁检测（仅 IPv6）
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/warp-stream-monitor.sh
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now $STREAM_SERVICE_NAME
-
-    color_echo green "流媒体解锁检测已开启（检测前会确认 WARP IPv6 可用，并显示 Netflix 地区）。未解锁立即换 IP，解锁后 30 分钟检测一次。"
-    echo "=== 实时日志（Ctrl+C 退出查看，服务继续后台运行） ==="
-    sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
-}
 
 
 
