@@ -210,8 +210,10 @@ enable_stream_monitor() {
 
     sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
 #!/bin/bash
-# WARP 流媒体解锁检测脚本
-IFACE="warp"
+# WARP 流媒体解锁检测脚本（所有请求通过 $NIC 发出）
+IFACE="warp"  # WARP IPv6 网卡名
+UA_Browser="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+NIC="--interface $IFACE"  # 可替换为代理参数，如 -x socks5://127.0.0.1:40000
 RETRY_COOLDOWN=10
 MAX_CONSEC_FAILS=10
 PAUSE_ON_MANY_FAILS=1800
@@ -219,29 +221,71 @@ SLEEP_WHEN_UNLOCKED=1800
 LOG_PREFIX="[WARP-STREAM]"
 
 log() { echo "$(date '+%F %T') ${LOG_PREFIX} $*"; }
-get_ipv6() { curl -6 -s --max-time 5 https://ip.gs || echo "不可用"; }
 
+# 获取当前 WARP IPv6 出口地址
+get_ipv6() { curl -6 $NIC -A "$UA_Browser" -fsL --max-time 5 https://ip.gs || echo "不可用"; }
+
+# 检查 WARP IPv6 是否可用
+check_warp_ipv6() {
+    local ip
+    ip=$(get_ipv6)
+    if [[ "$ip" == "不可用" || -z "$ip" ]]; then
+        log "⚠️ WARP IPv6 不可用，尝试重启接口..."
+        wg-quick down $IFACE >/dev/null 2>&1
+        wg-quick up $IFACE >/dev/null 2>&1
+        sleep $RETRY_COOLDOWN
+        ip=$(get_ipv6)
+        if [[ "$ip" == "不可用" || -z "$ip" ]]; then
+            log "❌ WARP IPv6 仍不可用，等待 ${PAUSE_ON_MANY_FAILS} 秒后重试..."
+            sleep $PAUSE_ON_MANY_FAILS
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Netflix 检测 + 地区获取
 check_netflix() {
-    local sg_id="81215567"
-    local original_id="80018499"
-    local code_sg
-    code_sg=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${sg_id}")
+    local sg_id="81215567"       # 非自制剧 ID
+    local original_id="80018499" # 自制剧 ID
+    local region_id="$sg_id"     # 用于获取地区的影片 ID
+    local code_sg code_orig region
+
+    code_sg=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        --write-out "%{http_code}" --output /dev/null \
+        "https://www.netflix.com/title/${sg_id}")
     if [ "$code_sg" = "200" ]; then
-        echo "√(完整)"
+        # 获取地区代码
+        region=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+            --write-out "%{redirect_url}" --output /dev/null \
+            "https://www.netflix.com/title/${region_id}" \
+            | sed 's/.*com\/\([^\/-]\{2\}\).*/\1/' | tr '[:lower:]' '[:upper:]')
+        region=${region:-"US"}
+        echo "√(完整, $region)"
         return 0
     fi
-    local code_orig
-    code_orig=$(curl -6 --max-time 10 -s -o /dev/null -w "%{http_code}" "https://www.netflix.com/title/${original_id}")
+
+    code_orig=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        --write-out "%{http_code}" --output /dev/null \
+        "https://www.netflix.com/title/${original_id}")
     if [ "$code_orig" = "200" ]; then
-        echo "×(仅自制剧)"
+        region=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+            --write-out "%{redirect_url}" --output /dev/null \
+            "https://www.netflix.com/title/${original_id}" \
+            | sed 's/.*com\/\([^\/-]\{2\}\).*/\1/' | tr '[:lower:]' '[:upper:]')
+        region=${region:-"US"}
+        echo "×(仅自制剧, $region)"
         return 1
     fi
+
     echo "×"
     return 1
 }
 
+# Disney+ 检测
 check_disney() {
-    local token=$(curl -6 -s --max-time 10 "https://global.edge.bamgrid.com/token" \
+    local token=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        "https://global.edge.bamgrid.com/token" \
         -H "authorization: Bearer ZGlzbmV5JmF1dGg9dG9rZW4=" \
         -H "content-type: application/x-www-form-urlencoded" \
         --data "grant_type=client_credentials" \
@@ -250,7 +294,8 @@ check_disney() {
         echo "×"
         return 1
     fi
-    local region=$(curl -6 -s --max-time 10 "https://global.edge.bamgrid.com/graph/v1/device/graphql" \
+    local region=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        "https://global.edge.bamgrid.com/graph/v1/device/graphql" \
         -H "authorization: Bearer $token" \
         -H "content-type: application/json" \
         --data '{"query":"mutation {registerDevice(input: {deviceFamily: DESKTOP, applicationRuntime: CHROME, deviceProfile: WINDOWS, appId: \"disneyplus\", appVersion: \"1.0.0\", deviceLanguage: \"en\", deviceOs: \"Windows 10\"}) {device {id}}}"}' \
@@ -266,6 +311,10 @@ check_disney() {
 
 fail_count=0
 while true; do
+    if ! check_warp_ipv6; then
+        continue
+    fi
+
     ipv6=$(get_ipv6)
     nf_status=$(check_netflix)
     nf_ok=$?
@@ -308,10 +357,11 @@ EOF
     sudo systemctl daemon-reload
     sudo systemctl enable --now $STREAM_SERVICE_NAME
 
-    color_echo green "流媒体解锁检测已开启。未解锁立即换 IP，解锁后 30 分钟检测一次。"
+    color_echo green "流媒体解锁检测已开启（检测前会确认 WARP IPv6 可用，并显示 Netflix 地区）。未解锁立即换 IP，解锁后 30 分钟检测一次。"
     echo "=== 实时日志（Ctrl+C 退出查看，服务继续后台运行） ==="
     sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
 }
+
 
 # 停止流媒体解锁检测
 disable_stream_monitor() {
