@@ -283,10 +283,10 @@ check_netflix() {
 
 # Disney+ 检测（完整流程）
 check_disney() {
-    local pre_assertion assertion pre_cookie disney_cookie token_content is_banned is_403
-    local fake_content refresh_token disney_content tmp_result region in_supported
-
     # 1. 模拟浏览器注册设备，获取 assertion
+    local pre_assertion assertion pre_cookie disney_cookie token_content is_banned is_403
+    local fake_content refresh_token disney_content tmp_result preview_check is_unavailable region in_supported
+
     pre_assertion=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
         -X POST "https://disney.api.edge.bamgrid.com/devices" \
         -H "authorization: Bearer ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84" \
@@ -317,7 +317,7 @@ check_disney() {
         return 1
     fi
 
-    # 4. 用 refresh_token 调 GraphQL API 获取地区信息
+    # 4. 用 refresh_token 调用 GraphQL API 获取地区信息
     fake_content=$(curl -6 $NIC -fsL --max-time 10 \
         "https://raw.githubusercontent.com/lmc999/RegionRestrictionCheck/main/cookies" | sed -n '8p')
     refresh_token=$(echo "$token_content" | python3 -m json.tool 2>/dev/null | grep 'refresh_token' | awk '{print $2}' | cut -f2 -d'"')
@@ -341,14 +341,6 @@ check_disney() {
     fi
 }
 
-fail_count=0
-while true; do
-    if ! check_warp_ipv6; then
-        continue
-    fi
-
-    ipv6=$(get_ipv6)
-    nf_status=$(check_netflix)
 
 
 
