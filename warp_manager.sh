@@ -32,7 +32,17 @@ color_echo() {
     fi
 }
 
-# 检查 WARP 接口状态和公网 IP
+# 检查服务状态
+check_service_status() {
+    local service="$1"
+    local name="$2"
+    if systemctl is-active --quiet "$service"; then
+        echo "$(color_echo green "$name: 运行中 ✅")"
+    else
+        echo "$(color_echo red "$name: 未运行 ❌")"
+    fi
+}
+
 check_warp_status() {
     local status ipv4 ipv6
 
@@ -42,13 +52,15 @@ check_warp_status() {
         status="$(color_echo red "未运行 ❌")"
     fi
 
-    # 不管 warp 是否运行，都检测本机出口
     ipv4=$(curl -4 -s --max-time 5 https://ip.gs || echo "不可用")
     ipv6=$(curl -6 -s --max-time 5 https://ip.gs || echo "不可用")
 
     echo "=== WARP 状态: $status ==="
     echo "出口 IPv4: $ipv4"
     echo "出口 IPv6: $ipv6"
+    echo "------------------------------"
+    check_service_status "$SERVICE_NAME" "接口异常检测服务"
+    check_service_status "$STREAM_SERVICE_NAME" "流媒体解锁检测服务"
     echo "=============================="
 }
 
