@@ -33,16 +33,6 @@ color_echo() {
 }
 
 # 检查服务状态
-check_service_status() {
-    local service="$1"
-    local name="$2"
-    if systemctl is-active --quiet "$service"; then
-        echo "$(color_echo green "$name: 运行中 ✅")"
-    else
-        echo "$(color_echo red "$name: 未运行 ❌")"
-    fi
-}
-
 check_warp_status() {
     local status ipv4_info ipv6_info ipv4 ipv6 isp4 isp6 country4 country6
 
@@ -64,16 +54,24 @@ check_warp_status() {
         country4="未知地区"
     fi
 
-    # IPv6 一次请求获取 IP + ISP + 国家
+    # IPv6 优先用 ip-api.com，不支持则切换到 ifconfig.co
     ipv6_info=$(curl -6 -s --max-time 5 "http://ip-api.com/json/?fields=query,org,country" || echo "")
     if [[ -n "$ipv6_info" && "$ipv6_info" != *"fail"* ]]; then
         ipv6=$(echo "$ipv6_info" | jq -r '.query')
         isp6=$(echo "$ipv6_info" | jq -r '.org')
         country6=$(echo "$ipv6_info" | jq -r '.country')
     else
-        ipv6="不可用"
-        isp6="未知服务商"
-        country6="未知地区"
+        # 备用 API
+        ipv6_info=$(curl -6 -s --max-time 5 "https://ifconfig.co/json" || echo "")
+        if [[ -n "$ipv6_info" && "$ipv6_info" != *"error"* ]]; then
+            ipv6=$(echo "$ipv6_info" | jq -r '.ip')
+            isp6=$(echo "$ipv6_info" | jq -r '.asn_org // "未知服务商"')
+            country6=$(echo "$ipv6_info" | jq -r '.country // "未知地区"')
+        else
+            ipv6="不可用"
+            isp6="未知服务商"
+            country6="未知地区"
+        fi
     fi
 
     echo "=== WARP 状态: $status ==="
@@ -84,6 +82,7 @@ check_warp_status() {
     check_service_status "$STREAM_SERVICE_NAME" "流媒体解锁检测服务"
     echo "=============================="
 }
+
 
 
 # --- 菜单功能函数 ---
