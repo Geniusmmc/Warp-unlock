@@ -35,6 +35,8 @@ color_echo() {
 # 检查服务状态
 check_warp_status() {
     local status ipv4_info ipv6_info ipv4 ipv6 isp4 isp6 country4 country6
+    local svc_name="${SERVICE_NAME:-warp-monitor.service}"
+    local stream_svc_name="${STREAM_SERVICE_NAME:-warp-stream-monitor.service}"
 
     if ip link show warp >/dev/null 2>&1; then
         status="$(color_echo green "运行中 ✅")"
@@ -42,7 +44,7 @@ check_warp_status() {
         status="$(color_echo red "未运行 ❌")"
     fi
 
-    # IPv4 一次请求获取 IP + ISP + 国家
+    # IPv4
     ipv4_info=$(curl -4 -s --max-time 5 "http://ip-api.com/json/?fields=query,org,country" || echo "")
     if [[ -n "$ipv4_info" && "$ipv4_info" != *"fail"* ]]; then
         ipv4=$(echo "$ipv4_info" | jq -r '.query')
@@ -54,14 +56,13 @@ check_warp_status() {
         country4="未知地区"
     fi
 
-    # IPv6 优先用 ip-api.com，不支持则切换到 ifconfig.co
+    # IPv6 优先 ip-api.com，不支持则切换 ifconfig.co
     ipv6_info=$(curl -6 -s --max-time 5 "http://ip-api.com/json/?fields=query,org,country" || echo "")
     if [[ -n "$ipv6_info" && "$ipv6_info" != *"fail"* ]]; then
         ipv6=$(echo "$ipv6_info" | jq -r '.query')
         isp6=$(echo "$ipv6_info" | jq -r '.org')
         country6=$(echo "$ipv6_info" | jq -r '.country')
     else
-        # 备用 API
         ipv6_info=$(curl -6 -s --max-time 5 "https://ifconfig.co/json" || echo "")
         if [[ -n "$ipv6_info" && "$ipv6_info" != *"error"* ]]; then
             ipv6=$(echo "$ipv6_info" | jq -r '.ip')
@@ -78,11 +79,10 @@ check_warp_status() {
     echo "出口 IPv4: $ipv4 ($isp4, $country4)"
     echo "出口 IPv6: $ipv6 ($isp6, $country6)"
     echo "------------------------------"
-    check_service_status "$SERVICE_NAME" "接口异常检测服务"
-    check_service_status "$STREAM_SERVICE_NAME" "流媒体解锁检测服务"
+    check_service_status "$svc_name" "接口异常检测服务"
+    check_service_status "$stream_svc_name" "流媒体解锁检测服务"
     echo "=============================="
 }
-
 
 
 # --- 菜单功能函数 ---
