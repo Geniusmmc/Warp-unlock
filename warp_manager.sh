@@ -259,36 +259,70 @@ disable_auto_restart() {
 enable_stream_monitor() {
     color_echo green "=== 开启流媒体解锁检测（仅 IPv6） ==="
 
-    sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<'EOF'
+    read -p "是否启用 Telegram 推送通知? (y/N): " use_tg
+    TG_ENABLED="no"
+    TG_TOKEN=""
+    TG_CHAT_ID=""
+    if [[ "$use_tg" =~ ^[Yy]$ ]]; then
+        read -p "请输入 Telegram Bot Token (格式: 123456:ABC-...): " tg_token
+        read -p "请输入 Telegram Chat ID: " tg_chat_id
+        TG_TOKEN="$tg_token"
+        TG_CHAT_ID="$tg_chat_id"
+        if [[ -n "$TG_TOKEN" && -n "$TG_CHAT_ID" ]]; then
+            TG_ENABLED="yes"
+            color_echo green "已启用 Telegram 推送"
+        else
+            color_echo yellow "未填写完整 Token 或 Chat ID，Telegram 推送未启用"
+        fi
+    fi
+
+    sudo bash -c "cat > /usr/local/bin/warp-stream-monitor.sh" <<EOF
 #!/bin/bash
-# WARP 流媒体解锁检测脚本（所有请求通过 $NIC 发出）
+# WARP 流媒体解锁检测脚本（所有请求通过 \$NIC 发出）
 IFACE="warp"  # WARP IPv6 网卡名
 UA_Browser="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-NIC="--interface $IFACE"  # 可替换为代理参数，如 -x socks5://127.0.0.1:40000
+NIC="--interface \$IFACE"  # 可替换为代理参数，如 -x socks5://127.0.0.1:40000
 RETRY_COOLDOWN=10
 MAX_CONSEC_FAILS=10
 PAUSE_ON_MANY_FAILS=1800
 SLEEP_WHEN_UNLOCKED=1800
 LOG_PREFIX="[WARP-STREAM]"
 
-log() { echo "$(date '+%F %T') ${LOG_PREFIX} $*"; }
+# Telegram 配置（由外部脚本写入）
+TG_ENABLED="${TG_ENABLED}"
+TG_TOKEN="${TG_TOKEN}"
+TG_CHAT_ID="${TG_CHAT_ID}"
+
+log() { echo "\$(date '+%F %T') ${LOG_PREFIX} \$*"; }
+
+tg_send() {
+    if [[ "\$TG_ENABLED" != "yes" || -z "\$TG_TOKEN" || -z "\$TG_CHAT_ID" ]]; then
+        return 0
+    fi
+    local text="\$1"
+    # 简单重试机制
+    for i in 1 2 3; do
+        curl -s -X POST "https://api.telegram.org/bot\$TG_TOKEN/sendMessage" -d chat_id="\$TG_CHAT_ID" -d text="\$text" >/dev/null 2>&1 && break
+        sleep 1
+    done
+}
 
 # 获取当前 WARP IPv6 出口地址
-get_ipv6() { curl -6 $NIC -A "$UA_Browser" -fsL --max-time 5 https://ip.gs || echo "不可用"; }
+get_ipv6() { curl -6 \$NIC -A "\$UA_Browser" -fsL --max-time 5 https://ip.gs || echo "不可用"; }
 
 # 检查 WARP IPv6 是否可用
 check_warp_ipv6() {
     local ip
-    ip=$(get_ipv6)
-    if [[ "$ip" == "不可用" || -z "$ip" ]]; then
+    ip=\$(get_ipv6)
+    if [[ "\$ip" == "不可用" || -z "\$ip" ]]; then
         log "⚠️ WARP IPv6 不可用，尝试重启接口..."
-        wg-quick down $IFACE >/dev/null 2>&1
-        wg-quick up $IFACE >/dev/null 2>&1
-        sleep $RETRY_COOLDOWN
-        ip=$(get_ipv6)
-        if [[ "$ip" == "不可用" || -z "$ip" ]]; then
-            log "❌ WARP IPv6 仍不可用，等待 ${PAUSE_ON_MANY_FAILS} 秒后重试..."
-            sleep $PAUSE_ON_MANY_FAILS
+        wg-quick down \$IFACE >/dev/null 2>&1
+        wg-quick up \$IFACE >/dev/null 2>&1
+        sleep \$RETRY_COOLDOWN
+        ip=\$(get_ipv6)
+        if [[ "\$ip" == "不可用" || -z "\$ip" ]]; then
+            log "❌ WARP IPv6 仍不可用，等待 \${PAUSE_ON_MANY_FAILS} 秒后重试..."
+            sleep \$PAUSE_ON_MANY_FAILS
             return 1
         fi
     fi
@@ -299,33 +333,33 @@ check_warp_ipv6() {
 check_netflix() {
     local sg_id="81215567"       # 非自制剧 ID
     local original_id="80018499" # 自制剧 ID
-    local region_id="$sg_id"     # 用于获取地区的影片 ID
+    local region_id="\$sg_id"     # 用于获取地区的影片 ID
     local code_sg code_orig region
 
-    code_sg=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+    code_sg=\$(curl -6 \$NIC -A "\$UA_Browser" -fsL --max-time 10 \
         --write-out "%{http_code}" --output /dev/null \
-        "https://www.netflix.com/title/${sg_id}")
-    if [ "$code_sg" = "200" ]; then
+        "https://www.netflix.com/title/\${sg_id}")
+    if [ "\$code_sg" = "200" ]; then
         # 获取地区代码
-        region=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        region=\$(curl -6 \$NIC -A "\$UA_Browser" -fsL --max-time 10 \
             --write-out "%{redirect_url}" --output /dev/null \
-            "https://www.netflix.com/title/${region_id}" \
+            "https://www.netflix.com/title/\${region_id}" \
             | sed 's/.*com\/\([^\/-]\{2\}\).*/\1/' | tr '[:lower:]' '[:upper:]')
-        region=${region:-"US"}
-        echo "√(完整, $region)"
+        region=\${region:-"US"}
+        echo "√(完整, \$region)"
         return 0
     fi
 
-    code_orig=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+    code_orig=\$(curl -6 \$NIC -A "\$UA_Browser" -fsL --max-time 10 \
         --write-out "%{http_code}" --output /dev/null \
-        "https://www.netflix.com/title/${original_id}")
-    if [ "$code_orig" = "200" ]; then
-        region=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+        "https://www.netflix.com/title/\${original_id}")
+    if [ "\$code_orig" = "200" ]; then
+        region=\$(curl -6 \$NIC -A "\$UA_Browser" -fsL --max-time 10 \
             --write-out "%{redirect_url}" --output /dev/null \
-            "https://www.netflix.com/title/${original_id}" \
+            "https://www.netflix.com/title/\${original_id}" \
             | sed 's/.*com\/\([^\/-]\{2\}\).*/\1/' | tr '[:lower:]' '[:upper:]')
-        region=${region:-"US"}
-        echo "×(仅自制剧, $region)"
+        region=\${region:-"US"}
+        echo "×(仅自制剧, \$region)"
         return 1
     fi
 
@@ -340,53 +374,53 @@ check_disney() {
     local fake_content refresh_token disney_content tmp_result region in_supported
 
     # 1. 模拟浏览器注册设备，获取 assertion
-    pre_assertion=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+    pre_assertion=\$(curl -6 \$NIC -A "\$UA_Browser" -fsL --max-time 10 \
         -X POST "https://disney.api.edge.bamgrid.com/devices" \
         -H "authorization: Bearer ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84" \
         -H "content-type: application/json; charset=UTF-8" \
         -d '{"deviceFamily":"browser","applicationRuntime":"chrome","deviceProfile":"windows","attributes":{}}')
 
-    assertion=$(echo "$pre_assertion" | python3 -m json.tool 2>/dev/null | grep assertion | cut -f4 -d'"')
-    if [ -z "$assertion" ]; then
+    assertion=\$(echo "\$pre_assertion" | python3 -m json.tool 2>/dev/null | grep assertion | cut -f4 -d'"')
+    if [ -z "\$assertion" ]; then
         echo "×"
         return 1
     fi
 
     # 2. 用 assertion 获取访问 token
-    pre_cookie=$(curl -6 $NIC -fsL --max-time 10 \
+    pre_cookie=\$(curl -6 \$NIC -fsL --max-time 10 \
         "https://raw.githubusercontent.com/lmc999/RegionRestrictionCheck/main/cookies" | sed -n '1p')
-    disney_cookie=$(echo "$pre_cookie" | sed "s/DISNEYASSERTION/${assertion}/g")
+    disney_cookie=\$(echo "\$pre_cookie" | sed "s/DISNEYASSERTION/\$assertion/g")
 
-    token_content=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+    token_content=\$(curl -6 \$NIC -A "\$UA_Browser" -fsL --max-time 10 \
         -X POST "https://disney.api.edge.bamgrid.com/token" \
         -H "authorization: Bearer ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84" \
-        -d "$disney_cookie")
+        -d "\$disney_cookie")
 
     # 3. 检查 token 是否被拒绝
-    is_banned=$(echo "$token_content" | python3 -m json.tool 2>/dev/null | grep 'forbidden-location')
-    is_403=$(echo "$token_content" | grep '403 ERROR')
-    if [ -n "$is_banned$is_403" ]; then
+    is_banned=\$(echo "\$token_content" | python3 -m json.tool 2>/dev/null | grep 'forbidden-location')
+    is_403=\$(echo "\$token_content" | grep '403 ERROR')
+    if [ -n "\$is_banned\$is_403" ]; then
         echo "×"
         return 1
     fi
 
     # 4. 用 refresh_token 调 GraphQL API 获取地区信息
-    fake_content=$(curl -6 $NIC -fsL --max-time 10 \
+    fake_content=\$(curl -6 \$NIC -fsL --max-time 10 \
         "https://raw.githubusercontent.com/lmc999/RegionRestrictionCheck/main/cookies" | sed -n '8p')
-    refresh_token=$(echo "$token_content" | python3 -m json.tool 2>/dev/null | grep 'refresh_token' | awk '{print $2}' | cut -f2 -d'"')
-    disney_content=$(echo "$fake_content" | sed "s/ILOVEDISNEY/${refresh_token}/g")
+    refresh_token=\$(echo "\$token_content" | python3 -m json.tool 2>/dev/null | grep 'refresh_token' | awk '{print \$2}' | cut -f2 -d'"')
+    disney_content=\$(echo "\$fake_content" | sed "s/ILOVEDISNEY/\$refresh_token/g")
 
-    tmp_result=$(curl -6 $NIC -A "$UA_Browser" -fsL --max-time 10 \
+    tmp_result=\$(curl -6 \$NIC -A "\$UA_Browser" -fsL --max-time 10 \
         -X POST "https://disney.api.edge.bamgrid.com/graph/v1/device/graphql" \
         -H "authorization: ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84" \
-        -d "$disney_content")
+        -d "\$disney_content")
 
-    region=$(echo "$tmp_result" | python3 -m json.tool 2>/dev/null | grep 'countryCode' | cut -f4 -d'"')
-    in_supported=$(echo "$tmp_result" | python3 -m json.tool 2>/dev/null | grep 'inSupportedLocation' | awk '{print $2}' | cut -f1 -d',')
+    region=\$(echo "\$tmp_result" | python3 -m json.tool 2>/dev/null | grep 'countryCode' | cut -f4 -d'"')
+    in_supported=\$(echo "\$tmp_result" | python3 -m json.tool 2>/dev/null | grep 'inSupportedLocation' | awk '{print \$2}' | cut -f1 -d',')
 
     # 5. 根据地区和支持状态判断是否解锁
-    if [[ -n "$region" && "$in_supported" == "true" ]]; then
-        echo "√($region)"
+    if [[ -n "\$region" && "\$in_supported" == "true" ]]; then
+        echo "√(\$region)"
         return 0
     else
         echo "×"
@@ -401,27 +435,36 @@ while true; do
         continue
     fi
 
-    ipv6=$(get_ipv6)
-    nf_status=$(check_netflix)
-    nf_ok=$?
-    ds_status=$(check_disney)
-    ds_ok=$?
+    ipv6=\$(get_ipv6)
+    nf_status=\$(check_netflix)
+    nf_ok=\$?
+    ds_status=\$(check_disney)
+    ds_ok=\$?
     
-    if [ $nf_ok -ne 0 ] || [ $ds_ok -ne 0 ]; then
+    if [ \$nf_ok -ne 0 ] || [ \$ds_ok -ne 0 ]; then
         ((fail_count++))
-        log "[IPv6: $ipv6] ❌ 未解锁（Netflix: $nf_status, Disney+: $ds_status），连续失败 ${fail_count} 次 → 更换 WARP IP..."
-        wg-quick down $IFACE >/dev/null 2>&1
-        wg-quick up $IFACE >/dev/null 2>&1
-        sleep $RETRY_COOLDOWN
-        if [ "$fail_count" -ge "$MAX_CONSEC_FAILS" ]; then
-            log "⚠️ 连续失败 ${MAX_CONSEC_FAILS} 次，暂停 ${PAUSE_ON_MANY_FAILS} 秒..."
-            sleep $PAUSE_ON_MANY_FAILS
+        log "[IPv6: \$ipv6] ❌ 未解锁（Netflix: \$nf_status, Disney+: \$ds_status），连续失败 \${fail_count} 次 → 更换 WARP IP..."
+        # 首次失败或达到阈值时发送 Telegram 通知（如果启用）
+        if [ "\$fail_count" -eq 1 ]; then
+            tg_send "⚠️ WARP 未解锁：IPv6=\$ipv6 | Netflix=\$nf_status | Disney+=\$ds_status | 时间=\$(date '+%F %T')"
+        fi
+        wg-quick down \$IFACE >/dev/null 2>&1
+        wg-quick up \$IFACE >/dev/null 2>&1
+        sleep \$RETRY_COOLDOWN
+        if [ "\$fail_count" -ge "\$MAX_CONSEC_FAILS" ]; then
+            log "⚠️ 连续失败 \${MAX_CONSEC_FAILS} 次，暂停 \${PAUSE_ON_MANY_FAILS} 秒..."
+            tg_send "🚨 WARP 连续未解锁已达 \${MAX_CONSEC_FAILS} 次，暂停 \${PAUSE_ON_MANY_FAILS} 秒后重试（IPv6=\$ipv6）"
+            sleep \$PAUSE_ON_MANY_FAILS
             fail_count=0
         fi
     else
-        log "[IPv6: $ipv6] ✅ 已解锁（Netflix: $nf_status, Disney+: $ds_status），${SLEEP_WHEN_UNLOCKED} 秒后检测"
+        log "[IPv6: \$ipv6] ✅ 已解锁（Netflix: \$nf_status, Disney+: \$ds_status），\${SLEEP_WHEN_UNLOCKED} 秒后检测"
+        # 若之前有失败记录，可发送恢复通知（可选）
+        if [ \$fail_count -gt 0 ]; then
+            tg_send "✅ WARP 已解锁恢复：IPv6=\$ipv6 | Netflix=\$nf_status | Disney+=\$ds_status | 时间=\$(date '+%F %T')"
+        fi
         fail_count=0
-        sleep $SLEEP_WHEN_UNLOCKED
+        sleep \$SLEEP_WHEN_UNLOCKED
     fi
 done
 EOF
@@ -443,7 +486,7 @@ EOF
     sudo systemctl daemon-reload
     sudo systemctl enable --now $STREAM_SERVICE_NAME
 
-    color_echo green "流媒体解锁检测已开启（检测前会确认 WARP IPv6 可用，并显示 Netflix 地区）。未解锁立即换 IP，解锁后 30 分钟检测一次。"
+    color_echo green "流媒体解锁检测已开启（检测前会确认 WARP IPv6 可用，并显示 Netflix 地区）。未解锁将更换 IP，首次未解锁与达到连续失败阈值时会发送 Telegram 通知（如果已启用）。"
     echo "=== 实时日志（Ctrl+C 退出查看，服务继续后台运行） ==="
     sudo journalctl -u $STREAM_SERVICE_NAME -f -n 0
 }
